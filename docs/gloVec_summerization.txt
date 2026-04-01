@@ -1,0 +1,27 @@
+1. User input paragraph
+Reads a paragraph from stdin (fgets). You save a copy for sentence splitting.
+
+2. Preprocess & Tokenize (manual tokenize() function)
+Uses strtok() to split on spaces and punctuation.
+Stores words in tokens[MAX_TOKENS][MAX_WORD_LEN].
+Very simple rule-based tokenization (no advanced NLP).
+
+3.Vectorize using real pretrained embeddings (load_glove() + vectorize())
+Loads real GloVe 50D vectors from mini_glove_50d.txt into a big array (manual parsing with atof()).
+For each token, looks up the vector (simple string compare loop). Unknown words get zero vector.
+Result: embeddings[MAX_TOKENS][EMBED_DIM] — each token now has a 50-float vector from real pretrained data.
+
+4. Calculate Self-Attention (self_attention() function — the core manual part)
+Copies embeddings to Q, K, V (simple memcpy — in real transformers these are learned linear projections, but here we use same for simplicity).
+Computes scaled dot-product:Cscores[i][j] = (Q[i] • K[j]) / sqrt(EMBED_DIM)   // nested loops: i, j, d
+Softmax on each row (find max, exp, normalize — manual loops).
+Computes output = attention_weights × V (another triple nested loop).
+Stores full attn_weights[MAX_TOKENS][MAX_TOKENS] matrix — this shows which tokens "pay attention" to which others.
+All with explicit for-loops (perfect for later parallelization: distribute i or j loops).
+
+5. Generate summary using calculated attention (summarize() function)
+Splits original text into sentences (simple strtok on ".!?").
+For each sentence, sums the attention weights of its tokens (uses the real attn_weights you calculated).
+Averages the attention per token in that sentence → gives a "importance score" based on attention.
+Picks the top 2 highest-scoring sentences (simple selection loop).
+Outputs them as "MEANINGFUL SUMMARY" with a note that it used calculated self-attention.
