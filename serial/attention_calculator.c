@@ -123,42 +123,75 @@ void self_attention(float embeddings[MAX_TOKENS][EMBED_DIM], int n_tokens,
     }
 }
 
-// ====================== 5. MEANINGFUL EXTRACTIVE SUMMARY (sentence level) ======================
+// ====================== 5. IMPROVED MEANINGFUL EXTRACTIVE SUMMARY USING ATTENTION ======================
 void summarize(char *original_text, char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
                float attn_weights[MAX_TOKENS][MAX_TOKENS], char *summary) {
-    // Simple sentence split (for meaningful summary)
-    char sentences[20][1024]; int n_sent = 0;
-    char *sent = strtok(original_text, ".!?");
-    while (sent && n_sent < 20) {
-        strcpy(sentences[n_sent++], sent);
+    // Step 1: Split into sentences (simple delimiter-based)
+    char sentences[30][1024];
+    int n_sent = 0;
+    char temp_text[8192];
+    strcpy(temp_text, original_text);
+    char *sent = strtok(temp_text, ".!?");
+    while (sent && n_sent < 30) {
+        while (*sent == ' ') sent++;  // trim leading space
+        if (strlen(sent) > 5) {       // ignore tiny fragments
+            strncpy(sentences[n_sent], sent, 1023);
+            sentences[n_sent][1023] = '\0';
+            n_sent++;
+        }
         sent = strtok(NULL, ".!?");
     }
 
-    float sent_score[20] = {0};
+    // Step 2: Score each sentence using attention weights (this is the key part)
+    float sent_score[30] = {0.0f};
     int token_idx = 0;
-    for (int s = 0; s < n_sent; s++) {
-        int sent_len = 0;
-        while (token_idx < n_tokens && strstr(sentences[s], tokens[token_idx])) {
-            for (int j = 0; j < n_tokens; j++)
-                sent_score[s] += attn_weights[token_idx][j];
-            sent_len++;
+    for (int s = 0; s < n_sent && token_idx < n_tokens; s++) {
+        int sent_token_count = 0;
+        float total_attn = 0.0f;
+
+        // For each token in this sentence, sum its attention to ALL tokens (global importance)
+        while (token_idx < n_tokens && strstr(sentences[s], tokens[token_idx]) != NULL) {
+            for (int j = 0; j < n_tokens; j++) {
+                total_attn += attn_weights[token_idx][j];   // use calculated attention
+            }
+            sent_token_count++;
             token_idx++;
         }
-        if (sent_len) sent_score[s] /= sent_len;
+
+        if (sent_token_count > 0) {
+            sent_score[s] = total_attn / sent_token_count;  // average attention per token in sentence
+        }
     }
 
-    // Pick top 2 sentences
-    int best1 = 0, best2 = -1;
-    for (int i = 1; i < n_sent; i++) {
-        if (sent_score[i] > sent_score[best1]) { best2 = best1; best1 = i; }
-        else if (best2 == -1 || sent_score[i] > sent_score[best2]) best2 = i;
+    // Step 3: Select top 2 sentences (simple selection - easy to parallelize later)
+    int best_idx[2] = {-1, -1};
+    float best_score[2] = {-1.0f, -1.0f};
+
+    for (int s = 0; s < n_sent; s++) {
+        if (sent_score[s] > best_score[0]) {
+            best_score[1] = best_score[0];
+            best_idx[1] = best_idx[0];
+            best_score[0] = sent_score[s];
+            best_idx[0] = s;
+        } else if (sent_score[s] > best_score[1]) {
+            best_score[1] = sent_score[s];
+            best_idx[1] = s;
+        }
     }
 
+    // Step 4: Build summary string
     summary[0] = '\0';
-    strcat(summary, "=== MEANINGFUL SUMMARY (real GloVe + attention) ===\n");
-    if (best1 < n_sent) { strcat(summary, sentences[best1]); strcat(summary, ".\n"); }
-    if (best2 != -1 && best2 < n_sent) { strcat(summary, sentences[best2]); strcat(summary, ".\n"); }
-    strcat(summary, "===================================================\n");
+    strcat(summary, "=== MEANINGFUL SUMMARY (built from real GloVe + calculated self-attention) ===\n");
+    if (best_idx[0] != -1) {
+        strcat(summary, sentences[best_idx[0]]);
+        strcat(summary, ".\n");
+    }
+    if (best_idx[1] != -1 && best_idx[1] != best_idx[0]) {
+        strcat(summary, sentences[best_idx[1]]);
+        strcat(summary, ".\n");
+    }
+    strcat(summary, "======================================================================\n");
+    strcat(summary, "Summary selected using average attention strength per sentence.\n");
 }
 
 // ====================== MAIN ======================
@@ -196,8 +229,7 @@ int main() {
     }
 
     summarize(original, tokens, n_tokens, attn_weights, summary);
-    printf("\n%s\n", summary);
-    printf("=== Serial C version ready for MPI / OpenMP / CUDA ===\n");
+    printf("\n%s\n", summary);    
 
     free(vocab);
     return 0;
