@@ -1,0 +1,8 @@
+short: 
+The climate crisis is one of the biggest challenges facing humanity today. Rising global temperatures have caused extreme weather events such as floods, droughts, and wildfires in many countries. Scientists warn that urgent action is needed to reduce carbon emissions and transition to renewable energy sources. Governments around the world are discussing new policies to protect the environment for future generations.
+
+medium:
+Artificial intelligence has transformed many industries including healthcare, finance, and transportation. Machine learning algorithms can now detect diseases from medical images with high accuracy. Self-driving cars are becoming safer every year thanks to advances in computer vision and deep learning. However, experts also raise concerns about job displacement and ethical issues related to AI decision making. Researchers continue to develop new techniques to make AI systems more transparent and fair.
+
+long:
+The history of the internet began with ARPANET in the late 1960s. This early network connected a few universities and research institutions. In the 1990s the world wide web was invented by Tim Berners-Lee making information accessible to everyone. Today billions of people use the internet for communication, shopping, education, and entertainment. Social media platforms have changed how we share news and connect with friends. Despite its many benefits the internet also brings challenges such as privacy concerns, misinformation, and digital addiction. Future developments in 5G technology and quantum computing promise even faster connections and new possibilities.
