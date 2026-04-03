@@ -1,0 +1,281 @@
+
+<style>
+.pw{padding:1rem 0}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:.75rem;font-size:12px;color:var(--color-text-secondary)}
+.lchip{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.dots{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:1.1rem;align-items:center}
+.dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;font-weight:500;border:1.5px solid;transition:background .12s}
+.di{border-color:#AFA9EC;color:#534AB7}.di.on{background:#EEEDFE}
+.dq{border-color:#5DCAA5;color:#0F6E56}.dq.on{background:#E1F5EE}
+.da{border-color:#85B7EB;color:#185FA5}.da.on{background:#E6F1FB}
+.ds{border-color:#F0997B;color:#993C1D}.ds.on{background:#FAECE7}
+.psep{width:1px;height:20px;background:var(--color-border-tertiary);margin:0 4px}
+.card{border-radius:12px;border:1px solid var(--color-border-tertiary);padding:1.25rem}
+.ptag{display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;margin-bottom:8px;letter-spacing:.04em;text-transform:uppercase}
+.pi{background:#EEEDFE;color:#3C3489}
+.pq{background:#E1F5EE;color:#085041}
+.pa{background:#E6F1FB;color:#0C447C}
+.ps{background:#FAECE7;color:#712B13}
+.stit{font-size:17px;font-weight:500;color:var(--color-text-primary);margin:4px 0 12px}
+.svis{margin-bottom:1rem;border-radius:8px;overflow:hidden}
+.sdesc{font-size:14px;line-height:1.65;color:var(--color-text-secondary);margin-bottom:12px}
+.sdesc code{font-family:var(--font-mono);font-size:12px;background:var(--color-background-secondary);padding:1px 5px;border-radius:4px;color:var(--color-text-primary)}
+.scode{font-family:var(--font-mono);font-size:12px;background:var(--color-background-secondary);padding:8px 12px;border-radius:6px;color:var(--color-text-secondary);border-left:3px solid var(--color-border-secondary)}
+.nav{display:flex;justify-content:space-between;align-items:center;margin-top:1rem}
+.nb{padding:6px 18px;border-radius:8px;border:1px solid var(--color-border-secondary);background:var(--color-background-secondary);color:var(--color-text-primary);cursor:pointer;font-size:13px;font-weight:500}
+.nb:disabled{opacity:.3;cursor:default}
+.nc{font-size:13px;color:var(--color-text-tertiary)}
+</style>
+
+<div class="pw">
+<div class="legend">
+  <span><span class="lchip" style="background:#AFA9EC"></span>Initialization (one-time)</span>
+  <span><span class="lchip" style="background:#5DCAA5"></span>Per-query pipeline</span>
+  <span><span class="lchip" style="background:#85B7EB"></span>Multi-head attention</span>
+  <span><span class="lchip" style="background:#F0997B"></span>Scoring &amp; output</span>
+</div>
+<div class="dots" id="dots"></div>
+<div class="card">
+  <div id="ptag" class="ptag"></div>
+  <div id="stit" class="stit"></div>
+  <div id="svis" class="svis"></div>
+  <div id="sdesc" class="sdesc"></div>
+  <div id="scode" class="scode"></div>
+</div>
+<div class="nav">
+  <button class="nb" id="pb" onclick="go(-1)">← Previous</button>
+  <span class="nc" id="nc"></span>
+  <button class="nb" id="nb2" onclick="go(1)">Next →</button>
+</div>
+</div>
+
+<script>
+const AD=`<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>`;
+function AL(x1,y1,x2,y2,lbl,lx,ly){
+  let s=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--color-text-secondary)" stroke-width="1" fill="none" marker-end="url(#arrow)"/>`;
+  if(lbl) s+=`<text class="ts" x="${lx}" y="${ly}" text-anchor="middle">${lbl}</text>`;
+  return s;
+}
+
+const stages=[
+{t:'i',ph:'Initialization — one-time on startup',pc:'pi',
+title:'1. Load GloVe embeddings',
+vis:`<svg viewBox="0 0 680 100" width="100%">${AD}
+<g class="c-gray"><rect x="10" y="28" width="130" height="44" rx="8" stroke-width="0.5"/>
+<text class="th" x="75" y="46" text-anchor="middle">glove.6B.200d.txt</text>
+<text class="ts" x="75" y="62" text-anchor="middle">~500,000 entries</text></g>
+${AL(142,50,168,50,'fgets()',155,44)}
+<g class="c-purple"><rect x="172" y="10" width="496" height="24" rx="5" stroke-width="0.5"/>
+<text class="ts" x="184" y="26">king</text><text class="ts" x="212" y="26" style="font-family:var(--font-mono)">0.50  0.69  −0.15  0.22  0.08  −0.33 … (200 floats total)</text></g>
+<g class="c-purple"><rect x="172" y="40" width="496" height="24" rx="5" stroke-width="0.5"/>
+<text class="ts" x="184" y="56">queen</text><text class="ts" x="220" y="56" style="font-family:var(--font-mono)">0.47  0.71  −0.12  0.19  0.11  −0.29 … (200 floats total)</text></g>
+<g class="c-purple"><rect x="172" y="70" width="496" height="24" rx="5" stroke-width="0.5"/>
+<text class="ts" x="184" y="86">cat</text><text class="ts" x="208" y="86" style="font-family:var(--font-mono)">0.23  −0.52  0.88  −0.07  0.34   0.61 … (200 floats total)</text></g>
+</svg>`,
+desc:`Each line of the GloVe file is parsed by <code>fgets()</code> into a word followed by 200 floating-point numbers. These are stored in a global <code>Embedding vocab[500000]</code> array. GloVe was trained on billions of tokens — words sharing similar contexts end up with similar vectors, so <code>king</code> and <code>queen</code> are close in the 200D space, and <code>cat</code> and <code>dog</code> are close. This is the real-world semantic foundation everything else builds on.`,
+code:`load_glove("glove.6B.200d.txt")  →  Embedding vocab[500000] = { char word[32], float vec[200] }`},
+
+{t:'i',ph:'Initialization — one-time on startup',pc:'pi',
+title:'2. Compute PCA whitening matrices W_Q and W_K',
+vis:`<svg viewBox="0 0 680 110" width="100%">${AD}
+<g class="c-purple"><rect x="10" y="38" width="112" height="34" rx="6" stroke-width="0.5"/>
+<text class="th" x="66" y="52" text-anchor="middle">All 500K</text>
+<text class="ts" x="66" y="66" text-anchor="middle">GloVe vectors</text></g>
+${AL(124,55,148,55,'mean',136,48)}
+<g class="c-purple"><rect x="152" y="30" width="108" height="50" rx="6" stroke-width="0.5"/>
+<text class="th" x="206" y="52" text-anchor="middle">Covariance</text>
+<text class="ts" x="206" y="68" text-anchor="middle">200 × 200</text></g>
+${AL(262,55,286,55,'Jacobi',274,48)}
+<g class="c-blue"><rect x="290" y="30" width="118" height="50" rx="6" stroke-width="0.5"/>
+<text class="th" x="349" y="52" text-anchor="middle">Eigenvectors V</text>
+<text class="ts" x="349" y="68" text-anchor="middle">+ eigenvalues λ</text></g>
+${AL(410,55,434,55,'whiten',422,48)}
+<g class="c-teal"><rect x="438" y="18" width="116" height="30" rx="6" stroke-width="0.5"/>
+<text class="th" x="496" y="37" text-anchor="middle">W_Q  [200×200]</text></g>
+<g class="c-teal"><rect x="438" y="56" width="116" height="30" rx="6" stroke-width="0.5"/>
+<text class="th" x="496" y="75" text-anchor="middle">W_K  [200×200]</text></g>
+<g class="c-gray"><rect x="564" y="24" width="106" height="52" rx="6" stroke-width="0.5"/>
+<text class="th" x="617" y="44" text-anchor="middle">Whitening</text>
+<text class="ts" x="617" y="62" text-anchor="middle" style="font-family:var(--font-mono)">V[i][j] / √λ[j]</text></g>
+</svg>`,
+desc:`The covariance matrix of all 500K GloVe vectors (200×200) captures how semantic dimensions co-vary across the vocabulary. <code>jacobi_eigen()</code> diagonalizes it, yielding eigenvectors (principal axes of GloVe space) and eigenvalues (variance along each axis). The whitening matrix <code>W_Q = W_K = V · diag(1/√λ)</code> normalizes these axes — high-variance directions (like sentiment) are scaled down, giving precise semantic axes equal weight. This makes every Q·K dot product a genuine Mahalanobis-style semantic similarity score.`,
+code:`compute_pca_projections()  →  W_Q[200][200], W_K[200][200]  (real GloVe geometry, not random)`},
+
+{t:'q',ph:'Per-query pipeline',pc:'pq',
+title:'3. Tokenize the input paragraph',
+vis:`<svg viewBox="0 0 680 82" width="100%">${AD}
+<g class="c-gray"><rect x="10" y="18" width="170" height="46" rx="8" stroke-width="0.5"/>
+<text class="ts" x="95" y="36" text-anchor="middle" style="font-family:var(--font-mono)">"The cat sat on</text>
+<text class="ts" x="95" y="52" text-anchor="middle" style="font-family:var(--font-mono)">  the mat."</text></g>
+${AL(182,41,205,41,'split',193,35)}
+<g class="c-teal"><rect x="210" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="233" y="45" text-anchor="middle">the</text></g>
+<g class="c-teal"><rect x="262" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="285" y="45" text-anchor="middle">cat</text></g>
+<g class="c-teal"><rect x="314" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="337" y="45" text-anchor="middle">sat</text></g>
+<g class="c-teal"><rect x="366" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="389" y="45" text-anchor="middle">on</text></g>
+<g class="c-teal"><rect x="418" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="441" y="45" text-anchor="middle">the</text></g>
+<g class="c-teal"><rect x="470" y="22" width="46" height="38" rx="6" stroke-width="0.5"/><text class="ts" x="493" y="45" text-anchor="middle">mat</text></g>
+<text class="ts" x="536" y="30">punctuation stripped</text>
+<text class="ts" x="536" y="46">all tokens lowercased</text>
+<text class="ts" x="536" y="62">max 512 tokens</text>
+</svg>`,
+desc:`<code>strtok()</code> splits on spaces, commas, periods, semicolons, question marks, quotes, and brackets. Each token is then lowercased character by character using <code>tolower()</code>. Lowercase is critical — GloVe stores every entry in lowercase, so <code>"The"</code> would miss <code>"the"</code> and fall back to a zero vector, silently discarding all semantic information for that word.`,
+code:`tokenize(text, tokens[512][32])  →  n_tokens, all tokens lowercase via tolower()`},
+
+{t:'q',ph:'Per-query pipeline',pc:'pq',
+title:'4. Vectorize — map each token to its GloVe vector',
+vis:`<svg viewBox="0 0 680 100" width="100%">${AD}
+<g class="c-teal"><rect x="10" y="34" width="46" height="30" rx="6" stroke-width="0.5"/><text class="ts" x="33" y="53" text-anchor="middle">cat</text></g>
+<g class="c-teal"><rect x="62" y="34" width="46" height="30" rx="6" stroke-width="0.5"/><text class="ts" x="85" y="53" text-anchor="middle">xyz</text></g>
+${AL(112,49,140,49)}
+<g class="c-gray"><rect x="144" y="18" width="88" height="62" rx="6" stroke-width="0.5"/>
+<text class="th" x="188" y="40" text-anchor="middle">vocab[]</text>
+<text class="ts" x="188" y="56" text-anchor="middle">strcmp scan</text>
+<text class="ts" x="188" y="70" text-anchor="middle">O(vocab_size)</text></g>
+${AL(234,36,260,28)}
+${AL(234,62,260,72)}
+<g class="c-purple"><rect x="264" y="14" width="406" height="28" rx="6" stroke-width="0.5"/>
+<text class="ts" x="274" y="28">found: </text>
+<text class="ts" x="310" y="28" style="font-family:var(--font-mono)">cat → [ 0.23, −0.52, 0.88, −0.07, … ]  200D  ✓</text></g>
+<g class="c-gray"><rect x="264" y="52" width="406" height="38" rx="6" stroke-width="0.5"/>
+<text class="ts" x="274" y="67">OOV: </text>
+<text class="ts" x="308" y="67" style="font-family:var(--font-mono)">xyz → [ 0, 0, 0, 0, … ]  zero vector  ✗</text>
+<text class="ts" x="274" y="83">no semantic signal — minimize with lowercase normalization</text></g>
+</svg>`,
+desc:`Each token is scanned against all <code>vocab[]</code> entries using <code>strcmp()</code>. If matched, its 200D GloVe vector is copied into the <code>embeddings[][]</code> matrix. Unknown (OOV) tokens get a zero vector — they contribute nothing to attention. After lowercase normalization, well-written English typically achieves 90–95%+ GloVe coverage. The result is a matrix of shape <code>[n_tokens × 200]</code> ready for the next steps.`,
+code:`vectorize(tokens, n, embeddings[n][200])  —  O(n_tokens × vocab_size) linear scan`},
+
+{t:'q',ph:'Per-query pipeline',pc:'pq',
+title:'5. Add sinusoidal positional encoding',
+vis:`<svg viewBox="0 0 680 102" width="100%">${AD}
+<text class="ts" x="20" y="14">GloVe vectors are position-unaware — word order is injected here:</text>
+<g class="c-teal"><rect x="10" y="20" width="80" height="36" rx="6" stroke-width="0.5"/>
+<text class="th" x="50" y="36" text-anchor="middle">the</text><text class="ts" x="50" y="50" text-anchor="middle">pos = 0</text></g>
+<g class="c-teal"><rect x="96" y="20" width="80" height="36" rx="6" stroke-width="0.5"/>
+<text class="th" x="136" y="36" text-anchor="middle">cat</text><text class="ts" x="136" y="50" text-anchor="middle">pos = 1</text></g>
+<g class="c-teal"><rect x="182" y="20" width="80" height="36" rx="6" stroke-width="0.5"/>
+<text class="th" x="222" y="36" text-anchor="middle">sat</text><text class="ts" x="222" y="50" text-anchor="middle">pos = 2</text></g>
+<text class="t" x="50" y="72" text-anchor="middle">+</text>
+<text class="t" x="136" y="72" text-anchor="middle">+</text>
+<text class="t" x="222" y="72" text-anchor="middle">+</text>
+<g class="c-blue"><rect x="10" y="78" width="80" height="18" rx="4" stroke-width="0.5"/>
+<text class="ts" x="50" y="91" text-anchor="middle">PE(0, d)</text></g>
+<g class="c-blue"><rect x="96" y="78" width="80" height="18" rx="4" stroke-width="0.5"/>
+<text class="ts" x="136" y="91" text-anchor="middle">PE(1, d)</text></g>
+<g class="c-blue"><rect x="182" y="78" width="80" height="18" rx="4" stroke-width="0.5"/>
+<text class="ts" x="222" y="91" text-anchor="middle">PE(2, d)</text></g>
+<g class="c-gray"><rect x="300" y="16" width="370" height="66" rx="8" stroke-width="0.5"/>
+<text class="th" x="485" y="36" text-anchor="middle">PE formula (Vaswani et al.)</text>
+<text class="ts" x="485" y="54" text-anchor="middle" style="font-family:var(--font-mono)">even d:  emb[pos][d] += sin(pos / 10000^(2d/200))</text>
+<text class="ts" x="485" y="72" text-anchor="middle" style="font-family:var(--font-mono)">odd  d:  emb[pos][d] += cos(pos / 10000^(2d/200))</text></g>
+</svg>`,
+desc:`Without positional encoding, self-attention is permutation-invariant — <code>"cat sat on mat"</code> and <code>"mat on sat cat"</code> would produce identical attention patterns. A unique sinusoidal fingerprint is added to each position across the 200 dimensions. Varying frequencies ensure every position is distinct. The sine/cosine pairing also means the encoding for <code>pos + k</code> is a linear transform of <code>pos</code>, preserving relative distance information for the attention mechanism.`,
+code:`add_positional_encoding(embeddings, n)  →  embeddings[pos][d] += sin or cos(pos / 10000^(2d/200))`},
+
+{t:'a',ph:'Multi-head self-attention',pc:'pa',
+title:'6. Multi-head self-attention — 8 parallel heads',
+vis:`<svg viewBox="0 0 680 152" width="100%">${AD}
+<text class="ts" x="340" y="14" text-anchor="middle">Input: embeddings X  [n_tokens × 200]</text>
+<g class="c-teal"><rect x="10" y="20" width="308" height="30" rx="6" stroke-width="0.5"/>
+<text class="ts" x="164" y="39" text-anchor="middle">Q = X · W_Q   (into PCA-whitened semantic space)</text></g>
+<g class="c-blue"><rect x="362" y="20" width="308" height="30" rx="6" stroke-width="0.5"/>
+<text class="ts" x="516" y="39" text-anchor="middle">K = X · W_K   (same whitened projection)</text></g>
+<text class="ts" x="340" y="66" text-anchor="middle">V = X  (identity — raw GloVe preserved, no projection on values)</text>
+<text class="ts" x="20" y="84">200 dims split across 8 heads (HEAD_DIM = 25 each):</text>
+<g class="c-purple"><rect x="10" y="92" width="68" height="38" rx="5" stroke-width="0.5"/>
+<text class="ts" x="44" y="108" text-anchor="middle">head 0</text>
+<text class="ts" x="44" y="122" text-anchor="middle">d: 0–24</text></g>
+<g class="c-purple"><rect x="84" y="92" width="68" height="38" rx="5" stroke-width="0.5"/>
+<text class="ts" x="118" y="108" text-anchor="middle">head 1</text>
+<text class="ts" x="118" y="122" text-anchor="middle">d: 25–49</text></g>
+<g class="c-purple"><rect x="158" y="92" width="68" height="38" rx="5" stroke-width="0.5"/>
+<text class="ts" x="192" y="108" text-anchor="middle">head 2</text>
+<text class="ts" x="192" y="122" text-anchor="middle">d: 50–74</text></g>
+<text class="ts" x="244" y="114">…</text>
+<g class="c-purple"><rect x="262" y="92" width="68" height="38" rx="5" stroke-width="0.5"/>
+<text class="ts" x="296" y="108" text-anchor="middle">head 7</text>
+<text class="ts" x="296" y="122" text-anchor="middle">d: 175–199</text></g>
+<g class="c-gray"><rect x="346" y="88" width="324" height="56" rx="8" stroke-width="0.5"/>
+<text class="ts" x="508" y="108" text-anchor="middle">score[i][j] = Q[i]·K[j] / √25  per head</text>
+<text class="ts" x="508" y="124" text-anchor="middle">→ subtract row max → exp → softmax</text>
+<text class="ts" x="508" y="140" text-anchor="middle">→ weighted sum of V → avg 8 heads</text></g>
+</svg>`,
+desc:`Q and K are projected through the PCA whitening matrices — their dot product now measures semantic closeness in GloVe's principal component space. V stays raw so the output preserves original GloVe meaning. The 200 dimensions are partitioned across 8 heads (25 each), letting each head independently specialize in different semantic relationships. Stable softmax subtracts the row maximum before <code>expf()</code> to prevent overflow. The 8 per-head attention matrices are averaged into the final <code>attn_weights[n×n]</code> and <code>output[n×200]</code>.`,
+code:`multihead_self_attention(embeddings, n, attn_weights, output)  —  O(n² × EMBED_DIM × NUM_HEADS)`},
+
+{t:'s',ph:'Scoring and output',pc:'ps',
+title:'7. Score each token by attention output norm',
+vis:`<svg viewBox="0 0 680 98" width="100%">${AD}
+<text class="ts" x="20" y="14">Attention output vectors  output[n][200]:</text>
+<g class="c-blue"><rect x="10" y="20" width="82" height="42" rx="6" stroke-width="0.5"/>
+<text class="th" x="51" y="38" text-anchor="middle">output[0]</text>
+<text class="ts" x="51" y="54" text-anchor="middle">‖v‖ = 1.83</text></g>
+<g class="c-blue"><rect x="98" y="20" width="82" height="42" rx="6" stroke-width="0.5"/>
+<text class="th" x="139" y="38" text-anchor="middle">output[1]</text>
+<text class="ts" x="139" y="54" text-anchor="middle">‖v‖ = 3.41</text></g>
+<g class="c-blue"><rect x="186" y="20" width="82" height="42" rx="6" stroke-width="0.5"/>
+<text class="th" x="227" y="38" text-anchor="middle">output[2]</text>
+<text class="ts" x="227" y="54" text-anchor="middle">‖v‖ = 0.72</text></g>
+<text class="ts" x="285" y="44">…</text>
+<g class="c-gray"><rect x="474" y="16" width="196" height="50" rx="8" stroke-width="0.5"/>
+<text class="th" x="572" y="36" text-anchor="middle">token_importance(v)</text>
+<text class="ts" x="572" y="56" text-anchor="middle" style="font-family:var(--font-mono)">= sqrtf(Σ v[d]²)  L2 norm</text></g>
+<text class="ts" x="20" y="82">High norm = focused semantic attention received from related neighbors → content-bearing token</text>
+</svg>`,
+desc:`After attention, each token's output vector is a weighted blend of all other tokens' embeddings, weighted by attention scores. Tokens that received strong, focused attention from semantically related neighbors end up with high-magnitude output vectors. The L2 norm (Euclidean length) of each output vector is the importance score. This avoids the naive approach of summing softmax rows — which always equals 1.0 regardless of how focused or dispersed the attention was, making it a useless signal.`,
+code:`token_importance(output[i])  =  sqrtf( sum_d  output[i][d]^2 )   — meaningful unlike sum(softmax row)`},
+
+{t:'s',ph:'Scoring and output',pc:'ps',
+title:'8. Map tokens to sentences → select top-2 summary',
+vis:`<svg viewBox="0 0 680 126" width="100%">${AD}
+<g class="c-teal"><rect x="10" y="10" width="446" height="38" rx="6" stroke-width="0.5"/>
+<text class="ts" x="20" y="27">Sentence A — specific, content-rich vocabulary</text>
+<text class="ts" x="20" y="45">tokens assigned here → mean output norm = 3.12   ✓ selected</text></g>
+<g class="c-gray"><rect x="10" y="54" width="446" height="38" rx="6" stroke-width="0.5"/>
+<text class="ts" x="20" y="71">Sentence B — vague filler, common stop words</text>
+<text class="ts" x="20" y="89">tokens assigned here → mean output norm = 0.88</text></g>
+<g class="c-teal"><rect x="10" y="98" width="446" height="24" rx="5" stroke-width="0.5"/>
+<text class="ts" x="20" y="114">Sentence C — another focused sentence → mean output norm = 2.95   ✓ selected</text></g>
+<g class="c-coral"><rect x="468" y="10" width="202" height="112" rx="8" stroke-width="0.5"/>
+<text class="th" x="569" y="32" text-anchor="middle">Steps in summarize()</text>
+<text class="ts" x="480" y="52">1. Split text on .!?</text>
+<text class="ts" x="480" y="68">2. Each token → sentence</text>
+<text class="ts" x="480" y="82">   via case-insensitive strstr</text>
+<text class="ts" x="480" y="98">3. Avg token norm per sentence</text>
+<text class="ts" x="480" y="114">4. Output top-2 in doc order</text></g>
+</svg>`,
+desc:`The text is split on <code>.!?</code> boundaries. Each token is then assigned to the first sentence whose text contains it (case-insensitive <code>strstr()</code>). The average token importance score is computed per sentence. The two highest-scoring sentences are selected as the summary and output in original document order so the result reads naturally. Sentences with semantically focused, content-specific words score higher than vague filler — this is the corrected mapping from the earlier bug-fixed version.`,
+code:`summarize()  →  top-2 sentences ranked by mean token_importance, printed in document order`}
+];
+
+const DC={i:'di',q:'dq',a:'da',s:'ds'};
+let cur=0;
+
+function render(){
+  const s=stages[cur];
+  const dc=document.getElementById('dots');
+  dc.innerHTML='';
+  let lt=null;
+  stages.forEach((st,i)=>{
+    if(lt&&st.t!==lt){const sep=document.createElement('div');sep.className='psep';dc.appendChild(sep);}
+    const d=document.createElement('div');
+    d.className='dot '+DC[st.t]+(i===cur?' on':'');
+    d.textContent=i+1;
+    d.title=st.title;
+    d.onclick=()=>{cur=i;render();};
+    dc.appendChild(d);
+    lt=st.t;
+  });
+  document.getElementById('ptag').className='ptag '+s.pc;
+  document.getElementById('ptag').textContent=s.ph;
+  document.getElementById('stit').textContent=s.title;
+  document.getElementById('svis').innerHTML=s.vis;
+  document.getElementById('sdesc').innerHTML=s.desc;
+  document.getElementById('scode').textContent=s.code;
+  document.getElementById('nc').textContent=`Stage ${cur+1} of ${stages.length}`;
+  document.getElementById('pb').disabled=cur===0;
+  document.getElementById('nb2').disabled=cur===stages.length-1;
+}
+
+function go(d){cur=Math.max(0,Math.min(stages.length-1,cur+d));render();}
+render();
+</script>
