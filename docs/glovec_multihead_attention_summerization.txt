@@ -1,0 +1,73 @@
+================================================================================
+ATTENTION SUMMARIZER PIPELINE: ARCHITECTURE & MATHEMATICAL OPERATIONS
+================================================================================
+
+PHASE 1: INITIALIZATION (ONE-TIME STARTUP)
+--------------------------------------------------------------------------------
+1. Load GloVe Embeddings
+   - Process: Parses "glove.6B.200d.txt" into a global Embedding array.
+   - Data: vocab[500000] entries, each containing a word and a 200-float vector.
+
+2. Compute PCA Whitening Matrices (W_Q and W_K)
+   - Step A: Compute Mean Vector (mu) for all 500k vectors.
+   - Step B: Compute 200x200 Covariance Matrix (C):
+     C = [1 / (N-1)] * sum((v - mu) * (v - mu)^T).
+   - Step C: Jacobi Eigendecomposition:
+     Iteratively zeros off-diagonal elements (100 sweeps) to find eigenvectors (V) 
+     and eigenvalues (lambda).
+   - Step D: Derive Whitening Projections:
+     W_Q = W_K = V * diag(1 / sqrt(lambda + epsilon)).
+     Note: This normalizes semantic axes to give them equal weight.
+
+
+PHASE 2: PER-QUERY PIPELINE
+--------------------------------------------------------------------------------
+3. Tokenization
+   - Process: Splits input text on punctuation (.,;:!?()[] etc.) using strtok().
+   - Normalization: Converts every character to lowercase using tolower() to 
+     ensure GloVe vocabulary matches.
+
+4. Vectorization
+   - Process: Linear scan of vocab[] using strcmp() for each token.
+   - Operation: If found, copies 200D vector; if OOV (Out of Vocabulary), 
+     assigns a zero vector.
+
+5. Sinusoidal Positional Encoding
+   - Purpose: Injects sequence order into position-unaware GloVe vectors.
+   - Formula:
+     For dimension d in {0...199} at position pos:
+     If d is even: emb[pos][d] += sin(pos / 10000^(d/200))
+     If d is odd:  emb[pos][d] += cos(pos / 10000^((d-1)/200))
+
+
+PHASE 3: MULTI-HEAD SELF-ATTENTION
+--------------------------------------------------------------------------------
+6. Multi-Head Self-Attention (8 Heads)
+   - Projections:
+     Q = X * W_Q  (Query: PCA-whitened space)
+     K = X * W_K  (Key: PCA-whitened space)
+     V = X        (Value: Raw GloVe embeddings)
+   - Per-Head Calculation (Head Dim = 25):
+     Score[i][j] = (Q[i] dot K[j]) / sqrt(25)
+   - Stable Softmax:
+     attn[i][j] = exp(Score[i][j] - max(Score_row_i)) / sum(exp(Score_row_i))
+   - Output:
+     Weighted sum of Value vectors based on attention weights.
+
+
+PHASE 4: SCORING AND OUTPUT
+--------------------------------------------------------------------------------
+7. Token Importance Scoring
+   - Metric: L2 Norm (Euclidean length) of the attention output vector.
+   - Formula: Importance = sqrt( sum( output_vec[d]^2 ) ).
+   - Significance: High norm indicates the token received strong, focused 
+     attention from semantically related neighbors.
+
+8. Sentence Mapping & Summarization
+   - Step A: Split text into sentences using delimiters (.!?).
+   - Step B: Map tokens to sentences using case-insensitive strstr().
+   - Step C: Calculate Sentence Score = Average(Token Importance) for all 
+     tokens belonging to that sentence.
+   - Step D: Select Top-2 sentences by score and print them in original 
+     document order.
+================================================================================

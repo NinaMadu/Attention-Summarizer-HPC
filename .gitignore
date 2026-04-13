@@ -56,7 +56,12 @@ dkms.conf
 
 # GloVe embedding files
 glove.6B.50d.txt
-serial/mini_glove_50d.txt
+glove.6B.200d.txt
+mini_glove_50d.txt
+mini_glove_200d.txt
+
+
 
 #compiled files
 attention_calculator
+attention_multihead
