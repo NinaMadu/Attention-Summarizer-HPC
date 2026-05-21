@@ -4,8 +4,8 @@ CFLAGS = -O2 -std=c99
 
 # CUDA Compiler variables
 NVCC = nvcc
-# NVIDIA RTX 5090 uses sm_120
-NVCC_FLAGS = -O2 -arch=sm_120
+# NVIDIA RTX 5090 uses sm_120, but if nvcc doesn't support it, leave it to default or adjust it.
+NVCC_FLAGS = -O2
 
 all: serial_app cuda_app
 
