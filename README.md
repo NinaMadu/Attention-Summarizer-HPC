@@ -19,6 +19,7 @@ The core goal is to compute self-attention on tokenized text and generate a **me
   - **CUDA** (GPU acceleration)
 - Clear, well-commented code suitable for HPC teaching and performance comparison
 - Meaningful output: tokens, sample attention matrix, and real attention-based summary
+- Deterministic output across CPU and GPU for numerical correctness verification
 
 ### Overall Architecture
 
@@ -78,6 +79,38 @@ The program prints:
 - tokenized text information
 - attention values (sample matrix/weights)
 - extracted summary sentences based on attention score
+- complexity and timing report
+
+## Run The CUDA Version
+
+The CUDA accelerated version is in `cuda/attention_summarizer_cuda.cu`. It requires an NVIDIA GPU (the Makefile defaults to targeting the RTX 5090 using `-arch=sm_120`, adjust if using a different card).
+
+### 1) Compile the CUDA program
+
+```bash
+make cuda_app
+```
+*(Or use `nvcc -O2 -arch=sm_120 cuda/attention_summarizer_cuda.cu -o cuda/summarizer_cuda -lm`)*
+
+### 2) Run the executable
+
+```bash
+./cuda/summarizer_cuda
+```
+On Windows PowerShell:
+```powershell
+.\cuda\summarizer_cuda.exe
+```
+
+## Compare Execution Time
+
+You can build and run both versions consecutively using Make:
+
+```bash
+make compare
+```
+
+This will run the serial version followed immediately by the CUDA version, allowing you to easily compare their runtime metrics on the generated report.
 
 dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
 
