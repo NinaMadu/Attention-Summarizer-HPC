@@ -726,7 +726,7 @@ int main() {
 
     double total_start = now_sec();
 
-    if (!load_glove("../glove.6B/glove.6B.200d.txt")) return 1;
+    if (!load_glove("glove.6B.200d.txt")) return 1;
 
     compute_pca_projections(total_start);
 
