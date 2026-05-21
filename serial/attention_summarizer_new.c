@@ -874,7 +874,13 @@ int main() {
     compute_pca_projections(total_start);
 
     printf("\nPaste paragraph (single line, end with Enter):\n");
-    fgets(paragraph, sizeof(paragraph), stdin);
+    double io_wait_start = now_sec();
+    if (fgets(paragraph, sizeof(paragraph), stdin) == NULL) {
+        fprintf(stderr, "Error or EOF reading input\n");
+        return 1;
+    }
+    double io_wait_time = now_sec() - io_wait_start;
+    total_start += io_wait_time;
 
     int n_tokens = tokenize(paragraph, tokens, token_sentence, sentences, &n_sentences);
     printf("\n  [tokenize] %d tokens extracted from %d sentences\n", n_tokens, n_sentences);
