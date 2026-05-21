@@ -79,3 +79,5 @@ The program prints:
 - attention values (sample matrix/weights)
 - extracted summary sentences based on attention score
 
+dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
+
