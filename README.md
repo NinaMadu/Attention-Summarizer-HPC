@@ -79,3 +79,15 @@ The program prints:
 - attention values (sample matrix/weights)
 - extracted summary sentences based on attention score
 
+## OpenMP Notes
+
+The OpenMP implementation is documented in [docs/openmp_notes.md](docs/openmp_notes.md).
+
+That file includes:
+
+- the OpenMP source file location
+- compile and run commands
+- `OMP_NUM_THREADS` usage
+- parallelized sections
+- correctness and performance notes
+
