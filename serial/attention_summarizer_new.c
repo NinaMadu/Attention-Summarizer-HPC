@@ -7,6 +7,7 @@
 
 #define MAX_TOKENS     512
 #define MAX_WORD_LEN   32
+#define MAX_SENTENCES  30
 #define EMBED_DIM      200
 #define MAX_VOCAB      500000
 #define NUM_HEADS      8
@@ -96,6 +97,13 @@ typedef struct {
     char word[MAX_WORD_LEN];
     float vec[EMBED_DIM];
 } Embedding;
+
+typedef struct {
+    float token_score[MAX_TOKENS];
+    float sent_score[MAX_SENTENCES];
+    int sent_count[MAX_SENTENCES];
+    int selected[2];
+} SummaryMetrics;
 
 Embedding *vocab;
 int vocab_size = 0;
@@ -340,17 +348,74 @@ int load_glove(const char *filename) {
 }
 
 /* ====================== TOKENIZE ====================== */
-int tokenize(char *text, char tokens[MAX_TOKENS][MAX_WORD_LEN]) {
+static int is_token_delim(char c) {
+    return c == '\0' || strchr(" .,;:!?\n\t\"'()[]{}", c) != NULL;
+}
+
+static int is_sentence_delim(char c) {
+    return c == '.' || c == '!' || c == '?';
+}
+
+static void trim_sentence(char *s) {
+    int start = 0;
+    while (s[start] && isspace((unsigned char)s[start])) start++;
+    if (start > 0) memmove(s, s + start, strlen(s + start) + 1);
+
+    int end = (int)strlen(s) - 1;
+    while (end >= 0 && isspace((unsigned char)s[end])) s[end--] = '\0';
+}
+
+int tokenize(char *text,
+             char tokens[MAX_TOKENS][MAX_WORD_LEN],
+             int token_sentence[MAX_TOKENS],
+             char sentences[MAX_SENTENCES][1024],
+             int *n_sentences) {
     int n = 0;
-    char *token = strtok(text, " .,;:!?\n\t\"'()[]{}");
-    while (token && n < MAX_TOKENS) {
-        strncpy(tokens[n], token, MAX_WORD_LEN-1);
-        tokens[n][MAX_WORD_LEN-1] = '\0';
-        for (int k = 0; tokens[n][k]; k++)
-            tokens[n][k] = tolower((unsigned char)tokens[n][k]);
-        n++;
-        token = strtok(NULL, " .,;:!?\n\t\"'()[]{}");
+    int s = 0;
+    int sent_len = 0;
+    int tok_len = 0;
+    char token_buf[MAX_WORD_LEN];
+
+    memset(token_sentence, -1, sizeof(int) * MAX_TOKENS);
+    for (int i = 0; i < MAX_SENTENCES; i++) sentences[i][0] = '\0';
+
+    for (int i = 0; ; i++) {
+        char c = text[i];
+
+        if (c != '\0' && !is_sentence_delim(c) && s < MAX_SENTENCES) {
+            if (sent_len < 1023) {
+                sentences[s][sent_len++] = c;
+                sentences[s][sent_len] = '\0';
+            }
+        }
+
+        if (!is_token_delim(c)) {
+            if (tok_len < MAX_WORD_LEN - 1)
+                token_buf[tok_len++] = (char)tolower((unsigned char)c);
+        } else if (tok_len > 0 && n < MAX_TOKENS) {
+            token_buf[tok_len] = '\0';
+            strncpy(tokens[n], token_buf, MAX_WORD_LEN - 1);
+            tokens[n][MAX_WORD_LEN - 1] = '\0';
+            token_sentence[n] = s;
+            n++;
+            tok_len = 0;
+        } else {
+            tok_len = 0;
+        }
+
+        if (is_sentence_delim(c) || c == '\0') {
+            if (s < MAX_SENTENCES && sent_len > 0) {
+                trim_sentence(sentences[s]);
+                if (strlen(sentences[s]) > 0) s++;
+            }
+            sent_len = 0;
+            if (s >= MAX_SENTENCES || c == '\0') break;
+        }
+
+        if (n >= MAX_TOKENS || c == '\0') break;
     }
+
+    *n_sentences = s;
     return n;
 }
 
@@ -525,74 +590,59 @@ float token_importance(float *output_vec) {
 }
 
 /* ====================== SUMMARIZE ====================== */
-void summarize(char *original_text,
-               char tokens[MAX_TOKENS][MAX_WORD_LEN],
+void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
+               int token_sentence[MAX_TOKENS],
+               char sentences[MAX_SENTENCES][1024],
+               int n_sent,
                int n_tokens,
+               float attn_weights[MAX_TOKENS][MAX_TOKENS],
                float output[MAX_TOKENS][EMBED_DIM],
+               SummaryMetrics *metrics,
                char *summary) {
     printf("\n");
     print_separator('-', 60);
     printf("  STAGE: sentence_scoring\n");
-    printf("  Complexity: O(T x S)  T=%d tokens\n", n_tokens);
+    printf("  Complexity: O(T^2 + T) attention-centrality scoring, T=%d tokens\n", n_tokens);
     print_separator('-', 60);
 
     double t0 = now_sec();
+    (void)tokens;
+    (void)output;
+    memset(metrics, 0, sizeof(*metrics));
+    metrics->selected[0] = -1;
+    metrics->selected[1] = -1;
 
-    char sentences[30][1024];
-    int n_sent = 0;
-    char temp[8192];
-    strncpy(temp, original_text, sizeof(temp)-1);
-    char *sent = strtok(temp, ".!?");
-    while (sent && n_sent < 30) {
-        while (*sent == ' ' || *sent == '\n') sent++;
-        if (strlen(sent) > 5) {
-            strncpy(sentences[n_sent], sent, 1023);
-            sentences[n_sent++][1023] = '\0';
-        }
-        sent = strtok(NULL, ".!?");
-    }
     printf("  [sum] Detected %d sentences\n", n_sent);
 
-    int token_sentence[MAX_TOKENS];
-    memset(token_sentence, -1, sizeof(token_sentence));
-
-    for (int i = 0; i < n_tokens; i++) {
-        for (int s = 0; s < n_sent; s++) {
-            char sent_lower[1024], tok_lower[MAX_WORD_LEN];
-            strncpy(sent_lower, sentences[s], 1023); sent_lower[1023]='\0';
-            strncpy(tok_lower,  tokens[i],    MAX_WORD_LEN-1); tok_lower[MAX_WORD_LEN-1]='\0';
-            for (int k=0; sent_lower[k]; k++) sent_lower[k]=tolower((unsigned char)sent_lower[k]);
-            for (int k=0; tok_lower[k];  k++) tok_lower[k] =tolower((unsigned char)tok_lower[k]);
-            if (strstr(sent_lower, tok_lower)) {
-                token_sentence[i] = s;
-                break;
-            }
-        }
+    for (int j = 0; j < n_tokens; j++) {
+        for (int i = 0; i < n_tokens; i++)
+            metrics->token_score[j] += attn_weights[i][j];
+        metrics->token_score[j] /= (n_tokens > 0) ? n_tokens : 1;
     }
 
-    float sent_score[30] = {0};
-    int   sent_count[30] = {0};
     for (int i = 0; i < n_tokens; i++) {
         int s = token_sentence[i];
-        if (s < 0) continue;
-        sent_score[s] += token_importance(output[i]);
-        sent_count[s]++;
+        if (s < 0 || s >= n_sent) continue;
+        metrics->sent_score[s] += metrics->token_score[i];
+        metrics->sent_count[s]++;
     }
-    printf("  [sum] Sentence scores (avg output-vector L2 norm):\n");
+    printf("  [sum] Sentence scores (avg incoming attention centrality):\n");
     for (int s = 0; s < n_sent; s++) {
-        if (sent_count[s] > 0) {
-            sent_score[s] /= sent_count[s];
+        if (metrics->sent_count[s] > 0) {
+            metrics->sent_score[s] /= metrics->sent_count[s];
             printf("    sentence[%2d]  tokens=%2d  score=%.4f  preview: \"%.50s...\"\n",
-                   s, sent_count[s], sent_score[s], sentences[s]);
+                   s, metrics->sent_count[s], metrics->sent_score[s], sentences[s]);
         }
     }
 
     int best[2] = {-1, -1};
     float bscore[2] = {-1.0f, -1.0f};
     for (int s = 0; s < n_sent; s++) {
-        if (sent_score[s] > bscore[0])      { bscore[1]=bscore[0]; best[1]=best[0]; bscore[0]=sent_score[s]; best[0]=s; }
-        else if (sent_score[s] > bscore[1]) { bscore[1]=sent_score[s]; best[1]=s; }
+        if (metrics->sent_score[s] > bscore[0])      { bscore[1]=bscore[0]; best[1]=best[0]; bscore[0]=metrics->sent_score[s]; best[0]=s; }
+        else if (metrics->sent_score[s] > bscore[1]) { bscore[1]=metrics->sent_score[s]; best[1]=s; }
     }
+    metrics->selected[0] = best[0];
+    metrics->selected[1] = best[1];
     printf("  [sum] Selected sentences: [%d] (score=%.4f), [%d] (score=%.4f)\n",
            best[0], bscore[0], best[1], bscore[1]);
 
@@ -603,21 +653,110 @@ void summarize(char *original_text,
     else order[0] = best[0], order[1] = best[1];
 
     double t1 = now_sec();
-    long long sum_ops = (long long)n_tokens * n_sent;
+    long long sum_ops = (long long)n_tokens * n_tokens + n_tokens;
     log_stage("sentence_scoring", t0, t1, sum_ops);
     printf("  [sum] Finished in %.6fs\n", t1-t0);
 
     summary[0] = '\0';
-    strcat(summary, "=== SUMMARY (GloVe 200D + PCA Whitening Attention) ===\n");
+    strcat(summary, "=== SUMMARY (GloVe 200D + PCA Whitening Attention Centrality) ===\n");
     for (int k = 0; k < 2; k++)
         if (order[k] != -1)
             { strcat(summary, sentences[order[k]]); strcat(summary, ".\n"); }
     strcat(summary, "======================================================\n");
 }
 
+/* ====================== COMPARISON OUTPUT ====================== */
+void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
+                             int token_sentence[MAX_TOKENS],
+                             int n_tokens,
+                             int n_sent,
+                             float attn_weights[MAX_TOKENS][MAX_TOKENS],
+                             float output[MAX_TOKENS][EMBED_DIM],
+                             SummaryMetrics *metrics) {
+    double attn_checksum = 0.0;
+    double attn_abs_checksum = 0.0;
+    double out_checksum = 0.0;
+    double out_abs_checksum = 0.0;
+    double row_sum_min = 1e30;
+    double row_sum_max = -1e30;
+    float attn_min = 1e30f;
+    float attn_max = -1e30f;
+
+    for (int i = 0; i < n_tokens; i++) {
+        double row_sum = 0.0;
+        for (int j = 0; j < n_tokens; j++) {
+            float v = attn_weights[i][j];
+            double weight = (double)(i + 1) * (double)(j + 1);
+            attn_checksum += (double)v * weight;
+            attn_abs_checksum += fabs((double)v) * weight;
+            row_sum += v;
+            if (v < attn_min) attn_min = v;
+            if (v > attn_max) attn_max = v;
+        }
+        if (row_sum < row_sum_min) row_sum_min = row_sum;
+        if (row_sum > row_sum_max) row_sum_max = row_sum;
+    }
+
+    for (int i = 0; i < n_tokens; i++) {
+        for (int dd = 0; dd < EMBED_DIM; dd++) {
+            float v = output[i][dd];
+            double weight = (double)(i + 1) * (double)(dd + 1);
+            out_checksum += (double)v * weight;
+            out_abs_checksum += fabs((double)v) * weight;
+        }
+    }
+    if (n_tokens == 0) {
+        row_sum_min = 0.0;
+        row_sum_max = 0.0;
+        attn_min = 0.0f;
+        attn_max = 0.0f;
+    }
+
+    printf("\n");
+    print_separator('=', 70);
+    printf("  COMPARISON REPORT FOR SERIAL / MPI / OPENMP / CUDA\n");
+    print_separator('=', 70);
+    printf("COMPARE_CONFIG,EMBED_DIM,%d,NUM_HEADS,%d,HEAD_DIM,%d,JACOBI_SWEEPS,%d\n",
+           EMBED_DIM, NUM_HEADS, HEAD_DIM, JACOBI_SWEEPS);
+    printf("COMPARE_COUNTS,tokens,%d,sentences,%d,vocab,%d\n",
+           n_tokens, n_sent, vocab_size);
+    printf("COMPARE_SELECTED,rank,1,sentence_id,%d,score,%.9f\n",
+           metrics->selected[0],
+           (metrics->selected[0] >= 0) ? metrics->sent_score[metrics->selected[0]] : -1.0f);
+    printf("COMPARE_SELECTED,rank,2,sentence_id,%d,score,%.9f\n",
+           metrics->selected[1],
+           (metrics->selected[1] >= 0) ? metrics->sent_score[metrics->selected[1]] : -1.0f);
+    printf("COMPARE_ATTENTION,checksum,%.9e,abs_checksum,%.9e,min,%.9e,max,%.9e,row_sum_min,%.9e,row_sum_max,%.9e\n",
+           attn_checksum, attn_abs_checksum, attn_min, attn_max, row_sum_min, row_sum_max);
+    printf("COMPARE_OUTPUT,checksum,%.9e,abs_checksum,%.9e\n",
+           out_checksum, out_abs_checksum);
+
+    printf("\nCOMPARE_SENTENCE_TABLE\n");
+    printf("sentence_id,token_count,score\n");
+    for (int s = 0; s < n_sent; s++)
+        printf("%d,%d,%.9f\n", s, metrics->sent_count[s], metrics->sent_score[s]);
+
+    printf("\nCOMPARE_TOKEN_TABLE\n");
+    printf("token_id,sentence_id,token,attention_centrality,output_l2_norm\n");
+    for (int i = 0; i < n_tokens; i++)
+        printf("%d,%d,%s,%.9f,%.9f\n",
+               i, token_sentence[i], tokens[i],
+               metrics->token_score[i], token_importance(output[i]));
+
+    int sample = (n_tokens < 8) ? n_tokens : 8;
+    printf("\nCOMPARE_ATTENTION_SAMPLE_%dx%d\n", sample, sample);
+    for (int i = 0; i < sample; i++) {
+        for (int j = 0; j < sample; j++) {
+            printf("%s%.9f", (j == 0) ? "" : ",", attn_weights[i][j]);
+        }
+        printf("\n");
+    }
+    print_separator('=', 70);
+}
+
 /* ====================== TOP-10 IMPORTANT WORDS ====================== */
-/* Ranks tokens by their output-vector L2 norm (same signal used for
-   sentence scoring). Stop-words are filtered so the result shows
+/* Ranks tokens by their output-vector L2 norm as an auxiliary diagnostic.
+   Stop-words are filtered so the result shows
    semantically meaningful words, not "the", "a", "is", etc.
    Deduplicates so the same word only appears once in the ranking.    */
 
@@ -708,12 +847,16 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
 /* ====================== MAIN ====================== */
 int main() {
-    char paragraph[8192], original[8192];
+    char paragraph[8192];
     char tokens[MAX_TOKENS][MAX_WORD_LEN];
+    char sentences[MAX_SENTENCES][1024];
+    int token_sentence[MAX_TOKENS];
+    int n_sentences = 0;
 
     float (*embeddings)[EMBED_DIM] = malloc(MAX_TOKENS * sizeof(*embeddings));
     float (*attn_weights)[MAX_TOKENS] = malloc(MAX_TOKENS * sizeof(*attn_weights));
     float (*output)[EMBED_DIM] = malloc(MAX_TOKENS * sizeof(*output));
+    SummaryMetrics metrics;
     char summary[4096];
 
     printf("\n");
@@ -732,20 +875,24 @@ int main() {
 
     printf("\nPaste paragraph (single line, end with Enter):\n");
     fgets(paragraph, sizeof(paragraph), stdin);
-    strncpy(original, paragraph, sizeof(original)-1);
 
-    int n_tokens = tokenize(paragraph, tokens);
-    printf("\n  [tokenize] %d tokens extracted\n", n_tokens);
+    int n_tokens = tokenize(paragraph, tokens, token_sentence, sentences, &n_sentences);
+    printf("\n  [tokenize] %d tokens extracted from %d sentences\n", n_tokens, n_sentences);
 
     vectorize(tokens, n_tokens, embeddings);
     add_positional_encoding(embeddings, n_tokens);
     multihead_self_attention(embeddings, n_tokens, attn_weights, output);
-    summarize(original, tokens, n_tokens, output, summary);
+    summarize(tokens, token_sentence, sentences, n_sentences,
+              n_tokens, attn_weights, output, &metrics, summary);
 
     printf("\n%s\n", summary);
 
     /* Top-10 most important words by attention output norm */
     print_top_words(tokens, n_tokens, output);
+
+    /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
+    print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
+                            attn_weights, output, &metrics);
 
     /* Print the full timing + complexity report */
     print_report(total_start);

@@ -65,3 +65,4 @@ mini_glove_200d.txt
 #compiled files
 attention_calculator
 attention_multihead
+serial/summarizer
