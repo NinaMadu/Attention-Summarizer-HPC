@@ -66,3 +66,6 @@ mini_glove_200d.txt
 attention_calculator
 attention_multihead
 serial/summarizer
+serial/summarizer.exe
+cuda/summarizer_cuda
+cuda/summarizer_cuda.exe
