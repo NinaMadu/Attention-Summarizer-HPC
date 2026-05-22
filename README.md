@@ -119,9 +119,7 @@ dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
 # results
 
 ## Serial
-============================================================
   TOP 10 IMPORTANT WORDS  (ranked by attention output norm)
-============================================================
   Rank  Word                  Score       Relevance
 ------------------------------------------------------------
   #1    com                      12.8472  [********************]
@@ -134,12 +132,9 @@ dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
   #8    research                 12.1290  [******************  ]
   #9    mobile                   12.1018  [******************  ]
   #10   quantum                  12.0646  [******************  ]
-============================================================
 
 
-======================================================================
   COMPLEXITY & TIMING REPORT
-======================================================================
   Stage                               Time (s)          Operations  % Total
 ----------------------------------------------------------------------
   load_glove                            4.5549            80000000   15.6% [###                 ]
@@ -152,14 +147,11 @@ dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
   sentence_scoring                      0.0012               15360    0.0% [                    ]
 ----------------------------------------------------------------------
   TOTAL                                29.1571
-======================================================================
 
 ## parallel
 
 
-============================================================
   TOP 10 IMPORTANT WORDS  (ranked by attention output norm)
-============================================================
   Rank  Word                  Score       Relevance
 ------------------------------------------------------------
   #1    com                      12.8309  [********************]
@@ -172,11 +164,8 @@ dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
   #8    research                 12.1289  [******************  ]
   #9    mobile                   12.1053  [******************  ]
   #10   quantum                  12.0672  [******************  ]
-============================================================
 
-======================================================================
   COMPLEXITY & TIMING REPORT  [CUDA]
-======================================================================
   Stage                               Time (s)          Operations  % Total
 ----------------------------------------------------------------------
   load_glove                            3.7923            80000000   37.0% [#######             ]
@@ -189,4 +178,56 @@ dataset: https://www.kaggle.com/datasets/incorpes/glove6b200d
   sentence_scoring                      0.0002              262656    0.0% [                    ]
 ----------------------------------------------------------------------
   TOTAL                                10.2435
-======================================================================
+## OpenMP Notes
+
+The OpenMP implementation is documented in [docs/openmp_notes.md](docs/openmp_notes.md).
+
+That file includes:
+
+- the OpenMP source file location
+- compile and run commands
+- `OMP_NUM_THREADS` usage
+- parallelized sections
+- correctness and performance notes
+
+
+
+## Running in Ninada's Laptop:
+su - mpiuser
+cd "/mnt/d/7 SEM/HPC/Project/Attention-Summarizer-HPC"
+
+# Run MPI
+Using make file:
+
+make mpi-mode
+mpirun -np 2 ./mpi/summarizer_mpi_mode
+
+Mannualy:
+
+mpicc -std=gnu11 -O2 mpi/attention_summarizer_mpi_new.c -o mpi/summarizer_mpi_mode -lm
+mpirun -np 2 ./mpi/summarizer_mpi_mode
+
+# Run MPI/OpenMP Hybrid
+Using make file:
+
+make mpi_openmp_hybrid
+OMP_NUM_THREADS=4 mpirun -np 2 ./mpi/mpi_openmp_hybrid
+
+Mannualy:
+
+make run-mpi_openmp_hybrid MPI_RANKS=2 OMP_THREADS=4
+
+# Run OpenMP
+Using make file:
+
+make openmp-mode
+make check-openmp-mode OMP_THREADS=4
+
+Mannualy:
+
+OMP_NUM_THREADS=4 ./openmp/summarizer_openmp_mode
+
+
+
+
+
