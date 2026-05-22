@@ -5,13 +5,19 @@
 #include <time.h>
 #include <ctype.h>
 #include <mpi.h>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
-#define MAX_TOKENS     512
-#define MAX_WORD_LEN   32
-#define MAX_SENTENCES  30
-#define EMBED_DIM      200
+#define MAX_TOKENS     1024
+#define MAX_WORD_LEN   64
+#define MAX_SENTENCES  128
+#define MAX_SENTENCE_LEN 16384
+#define MAX_PARAGRAPH_CHARS 65536
+#define MAX_SUMMARY_CHARS   65536
+#define EMBED_DIM      300
 #define MAX_VOCAB      500000
-#define NUM_HEADS      8
+#define NUM_HEADS      12
 #define HEAD_DIM       (EMBED_DIM / NUM_HEADS)
 #define JACOBI_SWEEPS  100
 #define EIG_FLOOR      1e-6f
@@ -27,6 +33,8 @@ typedef struct {
 #define MAX_STAGES 16
 static StageLog stage_log[MAX_STAGES];
 static int stage_count = 0;
+int mpi_rank = 0;
+int mpi_size = 1;
 
 static double now_sec() {
     struct timespec ts;
@@ -48,43 +56,104 @@ static void print_separator(char c, int width) {
     putchar('\n');
 }
 
-static void print_report(double total_start) {
-    double total = now_sec() - total_start;
-    printf("\n");
-    print_separator('=', 70);
-    printf("  COMPLEXITY & TIMING REPORT\n");
-    print_separator('=', 70);
-    printf("  %-32s  %10s  %18s  %s\n", "Stage", "Time (s)", "Operations", "% Total");
-    print_separator('-', 70);
-    for (int i = 0; i < stage_count; i++) {
-        double pct = (total > 0) ? 100.0 * stage_log[i].elapsed_sec / total : 0.0;
-        /* bar: 20 chars wide */
-        int bar_len = (int)(pct / 5.0);   /* 1 char = 5% */
-        char bar[22];
-        for (int b = 0; b < 20; b++) bar[b] = (b < bar_len) ? '#' : ' ';
-        bar[20] = '\0';
-        printf("  %-32s  %10.4f  %18lld  %5.1f%% [%s]\n",
-               stage_log[i].name,
-               stage_log[i].elapsed_sec,
-               stage_log[i].ops,
-               pct,
-               bar);
+static void print_resource_report(double functional_total_sec) {
+    double local_user_cpu = 0.0;
+    double local_sys_cpu = 0.0;
+    double local_peak_rss_mb = 0.0;
+
+#ifndef _WIN32
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        local_user_cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec * 1e-6;
+        local_sys_cpu  = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec * 1e-6;
+        local_peak_rss_mb = usage.ru_maxrss / 1024.0;
     }
-    print_separator('-', 70);
-    printf("  %-32s  %10.4f\n", "TOTAL", total);
-    print_separator('=', 70);
-    printf("\n  Complexity summary:\n");
-    printf("    load_glove           O(V x D)          V=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
-    printf("    covariance_matrix    O(V x D^2)        ~%.1fB multiply-adds\n",
-           (double)MAX_VOCAB * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
-    printf("    jacobi_eigen         O(sweeps x D^3)   sweeps=%d => ~%.0fM rotations\n",
-           JACOBI_SWEEPS,
-           (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
-    printf("    project_embeddings   O(T x D^2)        T=n_tokens\n");
-    printf("    self_attention QK^T  O(H x T^2 x d)    H=%d heads, d=%d\n", NUM_HEADS, HEAD_DIM);
-    printf("    self_attention out   O(H x T^2 x d)\n");
-    print_separator('=', 70);
-    printf("\n");
+#else
+    local_user_cpu = (double)clock() / CLOCKS_PER_SEC;
+#endif
+
+    double local_cpu = local_user_cpu + local_sys_cpu;
+    double sum_cpu = 0.0, max_cpu = 0.0;
+    double sum_rss = 0.0, max_rss = 0.0;
+
+    MPI_Reduce(&local_cpu, &sum_cpu, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_cpu, &max_cpu, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_peak_rss_mb, &sum_rss, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_peak_rss_mb, &max_rss, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    if (mpi_rank == 0) {
+        double avg_cpu = (mpi_size > 0) ? sum_cpu / mpi_size : 0.0;
+        double avg_rss = (mpi_size > 0) ? sum_rss / mpi_size : 0.0;
+        double cpu_pct = (functional_total_sec > 0.0)
+                         ? 100.0 * sum_cpu / functional_total_sec
+                         : 0.0;
+
+        printf("\n");
+        print_separator('=', 70);
+        printf("  RESOURCE USAGE REPORT\n");
+        print_separator('=', 70);
+        printf("  %-32s  %10.4f s\n", "Functional wall time", functional_total_sec);
+        printf("  %-32s  %10.4f s\n", "Total CPU time, all ranks", sum_cpu);
+        printf("  %-32s  %10.4f s\n", "Average CPU time per rank", avg_cpu);
+        printf("  %-32s  %10.4f s\n", "Max CPU time on one rank", max_cpu);
+        printf("  %-32s  %10.1f %%\n", "Approx total CPU utilization", cpu_pct);
+#ifndef _WIN32
+        printf("  %-32s  %10.2f MB\n", "Average peak RSS per rank", avg_rss);
+        printf("  %-32s  %10.2f MB\n", "Max peak RSS on one rank", max_rss);
+        printf("  %-32s  %10.2f MB\n", "Sum peak RSS across ranks", sum_rss);
+#else
+        printf("  Peak resident memory unavailable in this build.\n");
+#endif
+        print_separator('=', 70);
+    }
+}
+
+static void print_report(double total_start) {
+    (void)total_start;
+    double total = 0.0;
+    if (mpi_rank == 0) {
+        for (int i = 0; i < stage_count; i++)
+            total += stage_log[i].elapsed_sec;
+
+        printf("\n");
+        print_separator('=', 70);
+        printf("  COMPLEXITY & TIMING REPORT\n");
+        printf("  TOTAL is the sum of logged functional stages only.\n");
+        print_separator('=', 70);
+        printf("  %-32s  %10s  %18s  %s\n", "Stage", "Time (s)", "Operations", "% Total");
+        print_separator('-', 70);
+        for (int i = 0; i < stage_count; i++) {
+            double pct = (total > 0) ? 100.0 * stage_log[i].elapsed_sec / total : 0.0;
+            /* bar: 20 chars wide */
+            int bar_len = (int)(pct / 5.0);   /* 1 char = 5% */
+            char bar[22];
+            for (int b = 0; b < 20; b++) bar[b] = (b < bar_len) ? '#' : ' ';
+            bar[20] = '\0';
+            printf("  %-32s  %10.4f  %18lld  %5.1f%% [%s]\n",
+                   stage_log[i].name,
+                   stage_log[i].elapsed_sec,
+                   stage_log[i].ops,
+                   pct,
+                   bar);
+        }
+        print_separator('-', 70);
+        printf("  %-32s  %10.4f\n", "TOTAL", total);
+        print_separator('=', 70);
+        printf("\n  Complexity summary:\n");
+        printf("    load_glove           O(V x D)          V=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
+        printf("    covariance_matrix    O(V x D^2)        ~%.1fB multiply-adds\n",
+               (double)MAX_VOCAB * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
+        printf("    jacobi_eigen         O(sweeps x D^3)   sweeps=%d => ~%.0fM rotations\n",
+               JACOBI_SWEEPS,
+               (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
+        printf("    project_embeddings   O(T x D^2)        T=n_tokens\n");
+        printf("    self_attention QK^T  O(H x T^2 x d)    H=%d heads, d=%d\n", NUM_HEADS, HEAD_DIM);
+        printf("    self_attention out   O(H x T^2 x d)\n");
+        print_separator('=', 70);
+        printf("\n");
+    }
+
+    print_resource_report(total);
 }
 
 /* ====================== JACOBI PROGRESS LOGGING ====================== */
@@ -111,9 +180,6 @@ int vocab_size = 0;
 
 float W_Q[EMBED_DIM][EMBED_DIM];
 float W_K[EMBED_DIM][EMBED_DIM];
-
-int mpi_rank = 0;
-int mpi_size = 1;
 
 static int is_root() {
     return mpi_rank == 0;
@@ -358,21 +424,33 @@ void project_embeddings(float in[MAX_TOKENS][EMBED_DIM],
 
 /* ====================== LOAD GLOVE ====================== */
 int load_glove(const char *filename) {
-    printf("\n");
-    print_separator('-', 60);
-    printf("  STAGE: load_glove\n");
-    printf("  Complexity: O(V x D) reads, V<=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
-    print_separator('-', 60);
+    if (is_root()) {
+        printf("\n");
+        print_separator('-', 60);
+        printf("  STAGE: load_glove (MPI replicated)\n");
+        printf("  Complexity: O(V x D) reads per rank, V<=%d, D=%d, ranks=%d\n",
+               MAX_VOCAB, EMBED_DIM, mpi_size);
+        printf("  Accuracy mode: every rank reads the same file in serial order\n");
+        print_separator('-', 60);
+    }
 
-    double t0 = now_sec();
+    MPI_Barrier(MPI_COMM_WORLD);
+    double t0 = MPI_Wtime();
 
     FILE *f = fopen(filename, "r");
-    if (!f) { printf("ERROR: Cannot open %s\n", filename); return 0; }
+    if (!f) {
+        printf("ERROR: rank %d cannot open %s\n", mpi_rank, filename);
+        return 0;
+    }
 
     vocab = (Embedding *)malloc(MAX_VOCAB * sizeof(Embedding));
-    if (!vocab) return 0;
+    if (!vocab) {
+        printf("ERROR: rank %d vocab allocation failed\n", mpi_rank);
+        fclose(f);
+        return 0;
+    }
 
-    char line[8192];
+    char line[16384];
     vocab_size = 0;
     while (fgets(line, sizeof(line), f) && vocab_size < MAX_VOCAB) {
         char *token = strtok(line, " ");
@@ -384,29 +462,19 @@ int load_glove(const char *filename) {
             if (token) vocab[vocab_size].vec[dd] = atof(token);
         }
         vocab_size++;
-        if (vocab_size % 100000 == 0)
+        if (is_root() && vocab_size % 100000 == 0)
             printf("  [load] Loaded %d vectors so far...\n", vocab_size);
     }
     fclose(f);
 
-    double t1 = now_sec();
+    double t1 = MPI_Wtime();
     long long load_ops = (long long)vocab_size * EMBED_DIM;
-    log_stage("load_glove", t0, t1, load_ops);
-    printf("  [load] Loaded %d GloVe vectors (%dD) in %.4fs\n",
-           vocab_size, EMBED_DIM, t1-t0);
-    return 1;
-}
-
-void broadcast_vocab() {
-    MPI_Bcast(&vocab_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (!is_root()) {
-        vocab = (Embedding *)malloc(MAX_VOCAB * sizeof(Embedding));
-        if (!vocab) {
-            printf("ERROR: rank %d vocab alloc failed\n", mpi_rank);
-            MPI_Abort(MPI_COMM_WORLD, 4);
-        }
+    if (is_root()) {
+        log_stage("load_glove_replicated", t0, t1, load_ops);
+        printf("  [load] Loaded %d GloVe vectors (%dD) per rank in %.4fs\n",
+               vocab_size, EMBED_DIM, t1-t0);
     }
-    MPI_Bcast(vocab, vocab_size * (int)sizeof(Embedding), MPI_BYTE, 0, MPI_COMM_WORLD);
+    return 1;
 }
 
 /* ====================== TOKENIZE ====================== */
@@ -430,7 +498,7 @@ static void trim_sentence(char *s) {
 int tokenize(char *text,
              char tokens[MAX_TOKENS][MAX_WORD_LEN],
              int token_sentence[MAX_TOKENS],
-             char sentences[MAX_SENTENCES][1024],
+             char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
              int *n_sentences) {
     int n = 0;
     int s = 0;
@@ -445,7 +513,7 @@ int tokenize(char *text,
         char c = text[i];
 
         if (c != '\0' && !is_sentence_delim(c) && s < MAX_SENTENCES) {
-            if (sent_len < 1023) {
+            if (sent_len < MAX_SENTENCE_LEN - 1) {
                 sentences[s][sent_len++] = c;
                 sentences[s][sent_len] = '\0';
             }
@@ -830,7 +898,7 @@ float token_importance(float *output_vec) {
 /* ====================== SUMMARIZE ====================== */
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
-               char sentences[MAX_SENTENCES][1024],
+               char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
                int n_sent,
                int n_tokens,
                float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -896,7 +964,7 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     printf("  [sum] Finished in %.6fs\n", t1-t0);
 
     summary[0] = '\0';
-    strcat(summary, "=== SUMMARY (GloVe 200D + PCA Whitening Attention Centrality) ===\n");
+    strcat(summary, "=== SUMMARY (GloVe 300D + PCA Whitening Attention Centrality) ===\n");
     for (int k = 0; k < 2; k++)
         if (order[k] != -1)
             { strcat(summary, sentences[order[k]]); strcat(summary, ".\n"); }
@@ -1089,9 +1157,9 @@ int main() {
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
-    char paragraph[8192];
+    char paragraph[MAX_PARAGRAPH_CHARS];
     char tokens[MAX_TOKENS][MAX_WORD_LEN];
-    char sentences[MAX_SENTENCES][1024];
+    char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN];
     int token_sentence[MAX_TOKENS];
     int n_tokens = 0;
     int n_sentences = 0;
@@ -1100,7 +1168,7 @@ int main() {
     float (*attn_weights)[MAX_TOKENS] = malloc(MAX_TOKENS * sizeof(*attn_weights));
     float (*output)[EMBED_DIM] = malloc(MAX_TOKENS * sizeof(*output));
     SummaryMetrics metrics;
-    char summary[4096];
+    char summary[MAX_SUMMARY_CHARS];
 
     if (!embeddings || !attn_weights || !output) {
         if (is_root()) printf("ERROR: main allocation failed\n");
@@ -1110,7 +1178,7 @@ int main() {
     if (is_root()) {
         printf("\n");
         print_separator('=', 70);
-        printf("  MPI Attention Summarizer: GloVe 200D + PCA Whitening\n");
+        printf("  MPI Attention Summarizer: GloVe 300D + PCA Whitening\n");
         printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d  MPI_RANKS=%d\n",
                EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM, mpi_size);
         printf("  JACOBI_SWEEPS=%d  MAX_TOKENS=%d\n", JACOBI_SWEEPS, MAX_TOKENS);
@@ -1120,15 +1188,24 @@ int main() {
     MPI_Barrier(MPI_COMM_WORLD);
     double total_start = now_sec();
 
-    int load_ok = 1;
-    if (is_root())
-        load_ok = load_glove("glove.6B.200d.txt");
-    MPI_Bcast(&load_ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (!load_ok) {
+    int load_ok = load_glove("glove.6B.300d.txt");
+    int all_load_ok = 0;
+    MPI_Allreduce(&load_ok, &all_load_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if (!all_load_ok) {
         MPI_Finalize();
         return 1;
     }
-    broadcast_vocab();
+
+    int min_vocab_size = 0, max_vocab_size = 0;
+    MPI_Allreduce(&vocab_size, &min_vocab_size, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(&vocab_size, &max_vocab_size, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (min_vocab_size != max_vocab_size) {
+        if (is_root())
+            printf("ERROR: MPI ranks loaded different vocab sizes: min=%d max=%d\n",
+                   min_vocab_size, max_vocab_size);
+        MPI_Finalize();
+        return 1;
+    }
 
     compute_pca_projections(total_start);
 
@@ -1156,7 +1233,7 @@ int main() {
     MPI_Bcast(&n_sentences, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(tokens, MAX_TOKENS * MAX_WORD_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
     MPI_Bcast(token_sentence, MAX_TOKENS, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(sentences, MAX_SENTENCES * 1024, MPI_CHAR, 0, MPI_COMM_WORLD);
+    MPI_Bcast(sentences, MAX_SENTENCES * MAX_SENTENCE_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
 
     vectorize(tokens, n_tokens, embeddings);
     add_positional_encoding(embeddings, n_tokens);
@@ -1175,9 +1252,11 @@ int main() {
         print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
                                 attn_weights, output, &metrics);
 
-        /* Print the full timing + complexity report */
-        print_report(total_start);
     }
+
+    /* Print the full timing, complexity, and resource reports. All ranks enter
+       this function so MPI resource reductions are valid; only root prints. */
+    print_report(total_start);
 
     free(vocab); free(embeddings); free(attn_weights); free(output);
     MPI_Finalize();
