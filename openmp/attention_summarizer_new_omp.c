@@ -5,13 +5,19 @@
 #include <time.h>
 #include <ctype.h>
 #include <omp.h>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
-#define MAX_TOKENS     512
-#define MAX_WORD_LEN   32
-#define MAX_SENTENCES  30
-#define EMBED_DIM      200
+#define MAX_TOKENS     1024
+#define MAX_WORD_LEN   64
+#define MAX_SENTENCES  128
+#define MAX_SENTENCE_LEN 16384
+#define MAX_PARAGRAPH_CHARS 65536
+#define MAX_SUMMARY_CHARS   65536
+#define EMBED_DIM      300
 #define MAX_VOCAB      500000
-#define NUM_HEADS      8
+#define NUM_HEADS      12
 #define HEAD_DIM       (EMBED_DIM / NUM_HEADS)
 #define JACOBI_SWEEPS  100
 #define EIG_FLOOR      1e-6f
@@ -48,11 +54,52 @@ static void print_separator(char c, int width) {
     putchar('\n');
 }
 
+static void print_resource_report(double functional_total_sec) {
+    printf("\n");
+    print_separator('=', 70);
+    printf("  RESOURCE USAGE REPORT\n");
+    print_separator('=', 70);
+#ifndef _WIN32
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        double user_cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec * 1e-6;
+        double sys_cpu  = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec * 1e-6;
+        double cpu_total = user_cpu + sys_cpu;
+        double cpu_pct = (functional_total_sec > 0.0)
+                         ? 100.0 * cpu_total / functional_total_sec
+                         : 0.0;
+        double peak_rss_mb = usage.ru_maxrss / 1024.0;
+
+        printf("  %-32s  %10.4f s\n", "Functional wall time", functional_total_sec);
+        printf("  %-32s  %10.4f s\n", "User CPU time", user_cpu);
+        printf("  %-32s  %10.4f s\n", "System CPU time", sys_cpu);
+        printf("  %-32s  %10.1f %%\n", "Approx CPU utilization", cpu_pct);
+        printf("  %-32s  %10.2f MB\n", "Peak resident memory", peak_rss_mb);
+    } else {
+        printf("  Resource usage unavailable on this platform.\n");
+    }
+#else
+    double cpu_total = (double)clock() / CLOCKS_PER_SEC;
+    double cpu_pct = (functional_total_sec > 0.0)
+                     ? 100.0 * cpu_total / functional_total_sec
+                     : 0.0;
+    printf("  %-32s  %10.4f s\n", "Functional wall time", functional_total_sec);
+    printf("  %-32s  %10.4f s\n", "CPU time", cpu_total);
+    printf("  %-32s  %10.1f %%\n", "Approx CPU utilization", cpu_pct);
+    printf("  Peak resident memory unavailable in this build.\n");
+#endif
+    print_separator('=', 70);
+}
+
 static void print_report(double total_start) {
-    double total = now_sec() - total_start;
+    (void)total_start;
+    double total = 0.0;
+    for (int i = 0; i < stage_count; i++)
+        total += stage_log[i].elapsed_sec;
     printf("\n");
     print_separator('=', 70);
     printf("  COMPLEXITY & TIMING REPORT\n");
+    printf("  TOTAL is the sum of logged functional stages only.\n");
     print_separator('=', 70);
     printf("  %-32s  %10s  %18s  %s\n", "Stage", "Time (s)", "Operations", "% Total");
     print_separator('-', 70);
@@ -85,6 +132,8 @@ static void print_report(double total_start) {
     printf("    self_attention out   O(H x T^2 x d)\n");
     print_separator('=', 70);
     printf("\n");
+
+    print_resource_report(total);
 }
 
 /* ====================== JACOBI PROGRESS LOGGING ====================== */
@@ -350,7 +399,7 @@ int load_glove(const char *filename) {
     vocab = (Embedding *)malloc(MAX_VOCAB * sizeof(Embedding));
     if (!vocab) return 0;
 
-    char line[8192];
+    char line[16384];
     vocab_size = 0;
     while (fgets(line, sizeof(line), f) && vocab_size < MAX_VOCAB) {
         char *token = strtok(line, " ");
@@ -396,7 +445,7 @@ static void trim_sentence(char *s) {
 int tokenize(char *text,
              char tokens[MAX_TOKENS][MAX_WORD_LEN],
              int token_sentence[MAX_TOKENS],
-             char sentences[MAX_SENTENCES][1024],
+             char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
              int *n_sentences) {
     int n = 0;
     int s = 0;
@@ -411,7 +460,7 @@ int tokenize(char *text,
         char c = text[i];
 
         if (c != '\0' && !is_sentence_delim(c) && s < MAX_SENTENCES) {
-            if (sent_len < 1023) {
+            if (sent_len < MAX_SENTENCE_LEN - 1) {
                 sentences[s][sent_len++] = c;
                 sentences[s][sent_len] = '\0';
             }
@@ -466,7 +515,7 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
         return;
     }
 
-    #pragma omp parallel for reduction(+:hit,cmp_ops)
+    #pragma omp parallel for schedule(dynamic, 4) reduction(+:hit,cmp_ops)
     for (int i = 0; i < n_tokens; i++) {
         int found = 0;
         for (int v = 0; v < vocab_size; v++) {
@@ -567,7 +616,7 @@ void multihead_self_attention(float embeddings[MAX_TOKENS][EMBED_DIM],
     for (int h = 0; h < NUM_HEADS; h++) {
         int offset = h * HEAD_DIM;
 
-        #pragma omp parallel for reduction(+:qk_ops)
+        #pragma omp parallel for collapse(2) schedule(static) reduction(+:qk_ops)
         for (int i = 0; i < n_tokens; i++) {
             for (int j = 0; j < n_tokens; j++) {
                 float dot = 0.0f;
@@ -598,7 +647,7 @@ void multihead_self_attention(float embeddings[MAX_TOKENS][EMBED_DIM],
         printf("  [attn] head %d/%d  avg self-attention weight = %.4f\n",
                h+1, NUM_HEADS, mean_max);
 
-        #pragma omp parallel for reduction(+:out_ops)
+        #pragma omp parallel for collapse(2) schedule(static) reduction(+:out_ops)
         for (int i = 0; i < n_tokens; i++)
             for (int dd = 0; dd < HEAD_DIM; dd++) {
                 float sum = 0.0f;
@@ -637,7 +686,7 @@ float token_importance(float *output_vec) {
 /* ====================== SUMMARIZE ====================== */
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
-               char sentences[MAX_SENTENCES][1024],
+               char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
                int n_sent,
                int n_tokens,
                float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -704,7 +753,7 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     printf("  [sum] Finished in %.6fs\n", t1-t0);
 
     summary[0] = '\0';
-    strcat(summary, "=== SUMMARY (GloVe 200D + PCA Whitening Attention Centrality) ===\n");
+    strcat(summary, "=== SUMMARY (GloVe 300D + PCA Whitening Attention Centrality) ===\n");
     for (int k = 0; k < 2; k++)
         if (order[k] != -1)
             { strcat(summary, sentences[order[k]]); strcat(summary, ".\n"); }
@@ -893,9 +942,9 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
 /* ====================== MAIN ====================== */
 int main() {
-    char paragraph[8192];
+    char paragraph[MAX_PARAGRAPH_CHARS];
     char tokens[MAX_TOKENS][MAX_WORD_LEN];
-    char sentences[MAX_SENTENCES][1024];
+    char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN];
     int token_sentence[MAX_TOKENS];
     int n_sentences = 0;
 
@@ -903,11 +952,11 @@ int main() {
     float (*attn_weights)[MAX_TOKENS] = malloc(MAX_TOKENS * sizeof(*attn_weights));
     float (*output)[EMBED_DIM] = malloc(MAX_TOKENS * sizeof(*output));
     SummaryMetrics metrics;
-    char summary[4096];
+    char summary[MAX_SUMMARY_CHARS];
 
     printf("\n");
     print_separator('=', 70);
-    printf("  Attention Summarizer: GloVe 200D + PCA Whitening\n");
+    printf("  Attention Summarizer: GloVe 300D + PCA Whitening\n");
     printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d\n",
            EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM);
     printf("  JACOBI_SWEEPS=%d  MAX_TOKENS=%d\n", JACOBI_SWEEPS, MAX_TOKENS);
@@ -916,7 +965,7 @@ int main() {
 
     double total_start = now_sec();
 
-    if (!load_glove("glove.6B.200d.txt")) return 1;
+    if (!load_glove("glove.6B.300d.txt")) return 1;
 
     compute_pca_projections(total_start);
 
