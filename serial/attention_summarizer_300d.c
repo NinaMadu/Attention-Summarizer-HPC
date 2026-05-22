@@ -4,7 +4,6 @@
 #include <math.h>
 #include <time.h>
 #include <ctype.h>
-#include <mpi.h>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -33,8 +32,6 @@ typedef struct {
 #define MAX_STAGES 16
 static StageLog stage_log[MAX_STAGES];
 static int stage_count = 0;
-int mpi_rank = 0;
-int mpi_size = 1;
 
 static double now_sec() {
     struct timespec ts;
@@ -57,101 +54,83 @@ static void print_separator(char c, int width) {
 }
 
 static void print_resource_report(double functional_total_sec) {
-    double local_user_cpu = 0.0;
-    double local_sys_cpu = 0.0;
-    double local_peak_rss_mb = 0.0;
-
+    printf("\n");
+    print_separator('=', 70);
+    printf("  RESOURCE USAGE REPORT\n");
+    print_separator('=', 70);
 #ifndef _WIN32
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
-        local_user_cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec * 1e-6;
-        local_sys_cpu  = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec * 1e-6;
-        local_peak_rss_mb = usage.ru_maxrss / 1024.0;
-    }
-#else
-    local_user_cpu = (double)clock() / CLOCKS_PER_SEC;
-#endif
-
-    double local_cpu = local_user_cpu + local_sys_cpu;
-    double sum_cpu = 0.0, max_cpu = 0.0;
-    double sum_rss = 0.0, max_rss = 0.0;
-
-    MPI_Reduce(&local_cpu, &sum_cpu, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_cpu, &max_cpu, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_peak_rss_mb, &sum_rss, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_peak_rss_mb, &max_rss, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-
-    if (mpi_rank == 0) {
-        double avg_cpu = (mpi_size > 0) ? sum_cpu / mpi_size : 0.0;
-        double avg_rss = (mpi_size > 0) ? sum_rss / mpi_size : 0.0;
+        double user_cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec * 1e-6;
+        double sys_cpu  = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec * 1e-6;
+        double cpu_total = user_cpu + sys_cpu;
         double cpu_pct = (functional_total_sec > 0.0)
-                         ? 100.0 * sum_cpu / functional_total_sec
+                         ? 100.0 * cpu_total / functional_total_sec
                          : 0.0;
+        double peak_rss_mb = usage.ru_maxrss / 1024.0;
 
-        printf("\n");
-        print_separator('=', 70);
-        printf("  RESOURCE USAGE REPORT\n");
-        print_separator('=', 70);
         printf("  %-32s  %10.4f s\n", "Functional wall time", functional_total_sec);
-        printf("  %-32s  %10.4f s\n", "Total CPU time, all ranks", sum_cpu);
-        printf("  %-32s  %10.4f s\n", "Average CPU time per rank", avg_cpu);
-        printf("  %-32s  %10.4f s\n", "Max CPU time on one rank", max_cpu);
-        printf("  %-32s  %10.1f %%\n", "Approx total CPU utilization", cpu_pct);
-#ifndef _WIN32
-        printf("  %-32s  %10.2f MB\n", "Average peak RSS per rank", avg_rss);
-        printf("  %-32s  %10.2f MB\n", "Max peak RSS on one rank", max_rss);
-        printf("  %-32s  %10.2f MB\n", "Sum peak RSS across ranks", sum_rss);
-#else
-        printf("  Peak resident memory unavailable in this build.\n");
-#endif
-        print_separator('=', 70);
+        printf("  %-32s  %10.4f s\n", "User CPU time", user_cpu);
+        printf("  %-32s  %10.4f s\n", "System CPU time", sys_cpu);
+        printf("  %-32s  %10.1f %%\n", "Approx CPU utilization", cpu_pct);
+        printf("  %-32s  %10.2f MB\n", "Peak resident memory", peak_rss_mb);
+    } else {
+        printf("  Resource usage unavailable on this platform.\n");
     }
+#else
+    double cpu_total = (double)clock() / CLOCKS_PER_SEC;
+    double cpu_pct = (functional_total_sec > 0.0)
+                     ? 100.0 * cpu_total / functional_total_sec
+                     : 0.0;
+    printf("  %-32s  %10.4f s\n", "Functional wall time", functional_total_sec);
+    printf("  %-32s  %10.4f s\n", "CPU time", cpu_total);
+    printf("  %-32s  %10.1f %%\n", "Approx CPU utilization", cpu_pct);
+    printf("  Peak resident memory unavailable in this build.\n");
+#endif
+    print_separator('=', 70);
 }
 
 static void print_report(double total_start) {
     (void)total_start;
     double total = 0.0;
-    if (mpi_rank == 0) {
-        for (int i = 0; i < stage_count; i++)
-            total += stage_log[i].elapsed_sec;
-
-        printf("\n");
-        print_separator('=', 70);
-        printf("  COMPLEXITY & TIMING REPORT\n");
-        printf("  TOTAL is the sum of logged functional stages only.\n");
-        print_separator('=', 70);
-        printf("  %-32s  %10s  %18s  %s\n", "Stage", "Time (s)", "Operations", "% Total");
-        print_separator('-', 70);
-        for (int i = 0; i < stage_count; i++) {
-            double pct = (total > 0) ? 100.0 * stage_log[i].elapsed_sec / total : 0.0;
-            /* bar: 20 chars wide */
-            int bar_len = (int)(pct / 5.0);   /* 1 char = 5% */
-            char bar[22];
-            for (int b = 0; b < 20; b++) bar[b] = (b < bar_len) ? '#' : ' ';
-            bar[20] = '\0';
-            printf("  %-32s  %10.4f  %18lld  %5.1f%% [%s]\n",
-                   stage_log[i].name,
-                   stage_log[i].elapsed_sec,
-                   stage_log[i].ops,
-                   pct,
-                   bar);
-        }
-        print_separator('-', 70);
-        printf("  %-32s  %10.4f\n", "TOTAL", total);
-        print_separator('=', 70);
-        printf("\n  Complexity summary:\n");
-        printf("    load_glove           O(V x D)          V=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
-        printf("    covariance_matrix    O(V x D^2)        ~%.1fB multiply-adds\n",
-               (double)MAX_VOCAB * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
-        printf("    jacobi_eigen         O(sweeps x D^3)   sweeps=%d => ~%.0fM rotations\n",
-               JACOBI_SWEEPS,
-               (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
-        printf("    project_embeddings   O(T x D^2)        T=n_tokens\n");
-        printf("    self_attention QK^T  O(H x T^2 x d)    H=%d heads, d=%d\n", NUM_HEADS, HEAD_DIM);
-        printf("    self_attention out   O(H x T^2 x d)\n");
-        print_separator('=', 70);
-        printf("\n");
+    for (int i = 0; i < stage_count; i++)
+        total += stage_log[i].elapsed_sec;
+    printf("\n");
+    print_separator('=', 70);
+    printf("  COMPLEXITY & TIMING REPORT\n");
+    printf("  TOTAL is the sum of logged functional stages only.\n");
+    print_separator('=', 70);
+    printf("  %-32s  %10s  %18s  %s\n", "Stage", "Time (s)", "Operations", "% Total");
+    print_separator('-', 70);
+    for (int i = 0; i < stage_count; i++) {
+        double pct = (total > 0) ? 100.0 * stage_log[i].elapsed_sec / total : 0.0;
+        /* bar: 20 chars wide */
+        int bar_len = (int)(pct / 5.0);   /* 1 char = 5% */
+        char bar[22];
+        for (int b = 0; b < 20; b++) bar[b] = (b < bar_len) ? '#' : ' ';
+        bar[20] = '\0';
+        printf("  %-32s  %10.4f  %18lld  %5.1f%% [%s]\n",
+               stage_log[i].name,
+               stage_log[i].elapsed_sec,
+               stage_log[i].ops,
+               pct,
+               bar);
     }
+    print_separator('-', 70);
+    printf("  %-32s  %10.4f\n", "TOTAL", total);
+    print_separator('=', 70);
+    printf("\n  Complexity summary:\n");
+    printf("    load_glove           O(V x D)          V=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
+    printf("    covariance_matrix    O(V x D^2)        ~%.1fB multiply-adds\n",
+           (double)MAX_VOCAB * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
+    printf("    jacobi_eigen         O(sweeps x D^3)   sweeps=%d => ~%.0fM rotations\n",
+           JACOBI_SWEEPS,
+           (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
+    printf("    project_embeddings   O(T x D^2)        T=n_tokens\n");
+    printf("    self_attention QK^T  O(H x T^2 x d)    H=%d heads, d=%d\n", NUM_HEADS, HEAD_DIM);
+    printf("    self_attention out   O(H x T^2 x d)\n");
+    print_separator('=', 70);
+    printf("\n");
 
     print_resource_report(total);
 }
@@ -180,17 +159,6 @@ int vocab_size = 0;
 
 float W_Q[EMBED_DIM][EMBED_DIM];
 float W_K[EMBED_DIM][EMBED_DIM];
-
-static int is_root() {
-    return mpi_rank == 0;
-}
-
-static void mpi_range(int n, int *start, int *end) {
-    int base = n / mpi_size;
-    int rem = n % mpi_size;
-    *start = mpi_rank * base + ((mpi_rank < rem) ? mpi_rank : rem);
-    *end = *start + base + ((mpi_rank < rem) ? 1 : 0);
-}
 
 /* ====================== JACOBI EIGENDECOMPOSITION ====================== */
 void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
@@ -270,138 +238,103 @@ void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
 
 /* ====================== PCA PROJECTIONS ====================== */
 void compute_pca_projections(double total_start) {
-    (void)total_start;
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: covariance_matrix (MPI)\n");
-        printf("  Complexity: O(V x D^2)  =>  V=%d, D=%d, ranks=%d\n",
-               vocab_size, EMBED_DIM, mpi_size);
-        printf("  Expected ops: ~%.2fB\n",
-               (double)vocab_size * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
-        print_separator('-', 60);
-    }
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: covariance_matrix\n");
+    printf("  Complexity: O(V x D^2)  =>  V=%d, D=%d\n", vocab_size, EMBED_DIM);
+    printf("  Expected ops: ~%.2fB\n",
+           (double)vocab_size * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
+    print_separator('-', 60);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t0 = MPI_Wtime();
+    double t0 = now_sec();
 
-    int start, end;
-    mpi_range(vocab_size, &start, &end);
-
-    float local_mean[EMBED_DIM] = {0};
     float mean[EMBED_DIM] = {0};
-    for (int v = start; v < end; v++)
+    for (int v = 0; v < vocab_size; v++)
         for (int dd = 0; dd < EMBED_DIM; dd++)
-            local_mean[dd] += vocab[v].vec[dd];
+            mean[dd] += vocab[v].vec[dd];
+    for (int dd = 0; dd < EMBED_DIM; dd++)
+        mean[dd] /= vocab_size;
 
-    MPI_Reduce(local_mean, mean, EMBED_DIM, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (is_root())
-        for (int dd = 0; dd < EMBED_DIM; dd++)
-            mean[dd] /= vocab_size;
-    MPI_Bcast(mean, EMBED_DIM, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    float (*cov)[EMBED_DIM] = calloc(EMBED_DIM, sizeof(*cov));
+    if (!cov) { printf("ERROR: cov alloc failed\n"); return; }
 
-    float (*local_cov)[EMBED_DIM] = calloc(EMBED_DIM, sizeof(*local_cov));
-    float (*cov)[EMBED_DIM] = NULL;
-    if (is_root()) cov = calloc(EMBED_DIM, sizeof(*cov));
-    if (!local_cov || (is_root() && !cov)) {
-        if (is_root()) printf("ERROR: cov alloc failed\n");
-        MPI_Abort(MPI_COMM_WORLD, 2);
-    }
-
-    long long local_cov_ops = 0;
-    for (int v = start; v < end; v++) {
+    long long cov_ops = 0;
+    for (int v = 0; v < vocab_size; v++) {
         float centered[EMBED_DIM];
         for (int dd = 0; dd < EMBED_DIM; dd++)
             centered[dd] = vocab[v].vec[dd] - mean[dd];
         for (int i = 0; i < EMBED_DIM; i++)
             for (int j = i; j < EMBED_DIM; j++) {
-                local_cov[i][j] += centered[i] * centered[j];
-                local_cov_ops++;
+                cov[i][j] += centered[i] * centered[j];
+                cov_ops++;
             }
+        if (v % 100000 == 0 && v > 0)
+            printf("  [cov] processed %d / %d vectors  ops so far: %lld\n",
+                   v, vocab_size, cov_ops);
     }
-
-    MPI_Reduce(local_cov, cov, EMBED_DIM * EMBED_DIM, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    long long cov_ops = 0;
-    MPI_Reduce(&local_cov_ops, &cov_ops, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    free(local_cov);
-
-    if (is_root()) {
-        for (int i = 0; i < EMBED_DIM; i++)
-            for (int j = i; j < EMBED_DIM; j++) {
-                cov[i][j] /= (vocab_size - 1);
-                cov[j][i]  = cov[i][j];
-            }
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t1 = MPI_Wtime();
-    if (is_root()) {
-        log_stage("covariance_matrix_mpi", t0, t1, cov_ops);
-        printf("  [cov] MPI finished in %.4fs  total ops: %lld\n", t1-t0, cov_ops);
-    }
-
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: jacobi_eigen\n");
-        printf("  Complexity: O(sweeps x D^3)  =>  ~%.0fM Jacobi rotations\n",
-               (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
-        print_separator('-', 60);
-
-        double t2 = MPI_Wtime();
-        float (*eigvecs)[EMBED_DIM] = malloc(EMBED_DIM * sizeof(*eigvecs));
-        float eigvals[EMBED_DIM];
-        if (!eigvecs) {
-            printf("ERROR: eigvec alloc failed\n");
-            free(cov);
-            MPI_Abort(MPI_COMM_WORLD, 3);
+    for (int i = 0; i < EMBED_DIM; i++)
+        for (int j = i; j < EMBED_DIM; j++) {
+            cov[i][j] /= (vocab_size - 1);
+            cov[j][i]  = cov[i][j];
         }
 
-        long long jacobi_ops = 0;
-        jacobi_eigen(cov, eigvecs, eigvals, &jacobi_ops);
+    double t1 = now_sec();
+    log_stage("covariance_matrix", t0, t1, cov_ops);
+    printf("  [cov] Finished in %.4fs  total ops: %lld\n", t1-t0, cov_ops);
 
-        double t3 = MPI_Wtime();
-        log_stage("jacobi_eigen", t2, t3, jacobi_ops);
-        printf("  [jacobi] Finished in %.4fs\n", t3-t2);
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: jacobi_eigen\n");
+    printf("  Complexity: O(sweeps x D^3)  =>  ~%.0fM Jacobi rotations\n",
+           (double)JACOBI_SWEEPS * EMBED_DIM * EMBED_DIM / 2.0 / 1e6);
+    print_separator('-', 60);
 
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: build_whitening_matrices\n");
-        printf("  Complexity: O(D^2) = %d ops\n", EMBED_DIM * EMBED_DIM);
-        print_separator('-', 60);
+    double t2 = now_sec();
+    float (*eigvecs)[EMBED_DIM] = malloc(EMBED_DIM * sizeof(*eigvecs));
+    float eigvals[EMBED_DIM];
+    if (!eigvecs) { printf("ERROR: eigvec alloc failed\n"); free(cov); return; }
 
-        double t4 = MPI_Wtime();
-        long long w_ops = 0;
-        printf("  [pca] Top 5 eigenvalues (variance explained):\n");
-        float ev_copy[EMBED_DIM];
-        memcpy(ev_copy, eigvals, sizeof(eigvals));
-        for (int pass = 0; pass < 5; pass++) {
-            int mx = pass;
-            for (int k = pass+1; k < EMBED_DIM; k++)
-                if (ev_copy[k] > ev_copy[mx]) mx = k;
-            float tmp = ev_copy[pass]; ev_copy[pass] = ev_copy[mx]; ev_copy[mx] = tmp;
-            printf("    eigenvalue[%d] = %.6f\n", pass, ev_copy[pass]);
-        }
+    long long jacobi_ops = 0;
+    jacobi_eigen(cov, eigvecs, eigvals, &jacobi_ops);
 
-        for (int i = 0; i < EMBED_DIM; i++) {
-            for (int j = 0; j < EMBED_DIM; j++) {
-                float scale = (eigvals[j] > EIG_FLOOR) ? 1.0f / sqrtf(eigvals[j]) : 0.0f;
-                W_Q[i][j] = eigvecs[i][j] * scale;
-                W_K[i][j] = eigvecs[i][j] * scale;
-                w_ops++;
-            }
-        }
-        double t5 = MPI_Wtime();
-        log_stage("build_whitening_W", t4, t5, w_ops);
-        printf("  [pca] W_Q / W_K built in %.6fs\n", t5-t4);
+    double t3 = now_sec();
+    log_stage("jacobi_eigen", t2, t3, jacobi_ops);
+    printf("  [jacobi] Finished in %.4fs\n", t3-t2);
 
-        free(cov);
-        free(eigvecs);
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: build_whitening_matrices\n");
+    printf("  Complexity: O(D^2) = %d ops\n", EMBED_DIM * EMBED_DIM);
+    print_separator('-', 60);
+
+    double t4 = now_sec();
+    long long w_ops = 0;
+    /* Print top-5 eigenvalues so the examiner can see the PCA spectrum */
+    printf("  [pca] Top 5 eigenvalues (variance explained):\n");
+    float ev_copy[EMBED_DIM];
+    memcpy(ev_copy, eigvals, sizeof(eigvals));
+    for (int pass = 0; pass < 5; pass++) {
+        int mx = pass;
+        for (int k = pass+1; k < EMBED_DIM; k++)
+            if (ev_copy[k] > ev_copy[mx]) mx = k;
+        float tmp = ev_copy[pass]; ev_copy[pass] = ev_copy[mx]; ev_copy[mx] = tmp;
+        printf("    eigenvalue[%d] = %.6f\n", pass, ev_copy[pass]);
     }
 
-    MPI_Bcast(W_Q, EMBED_DIM * EMBED_DIM, MPI_FLOAT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(W_K, EMBED_DIM * EMBED_DIM, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    for (int i = 0; i < EMBED_DIM; i++) {
+        for (int j = 0; j < EMBED_DIM; j++) {
+            float scale = (eigvals[j] > EIG_FLOOR) ? 1.0f / sqrtf(eigvals[j]) : 0.0f;
+            W_Q[i][j] = eigvecs[i][j] * scale;
+            W_K[i][j] = eigvecs[i][j] * scale;
+            w_ops++;
+        }
+    }
+    double t5 = now_sec();
+    log_stage("build_whitening_W", t4, t5, w_ops);
+    printf("  [pca] W_Q / W_K built in %.6fs\n", t5-t4);
+
+    free(cov);
+    free(eigvecs);
 }
 
 /* ====================== PROJECT EMBEDDINGS ====================== */
@@ -424,31 +357,19 @@ void project_embeddings(float in[MAX_TOKENS][EMBED_DIM],
 
 /* ====================== LOAD GLOVE ====================== */
 int load_glove(const char *filename) {
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: load_glove (MPI replicated)\n");
-        printf("  Complexity: O(V x D) reads per rank, V<=%d, D=%d, ranks=%d\n",
-               MAX_VOCAB, EMBED_DIM, mpi_size);
-        printf("  Accuracy mode: every rank reads the same file in serial order\n");
-        print_separator('-', 60);
-    }
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: load_glove\n");
+    printf("  Complexity: O(V x D) reads, V<=%d, D=%d\n", MAX_VOCAB, EMBED_DIM);
+    print_separator('-', 60);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t0 = MPI_Wtime();
+    double t0 = now_sec();
 
     FILE *f = fopen(filename, "r");
-    if (!f) {
-        printf("ERROR: rank %d cannot open %s\n", mpi_rank, filename);
-        return 0;
-    }
+    if (!f) { printf("ERROR: Cannot open %s\n", filename); return 0; }
 
     vocab = (Embedding *)malloc(MAX_VOCAB * sizeof(Embedding));
-    if (!vocab) {
-        printf("ERROR: rank %d vocab allocation failed\n", mpi_rank);
-        fclose(f);
-        return 0;
-    }
+    if (!vocab) return 0;
 
     char line[16384];
     vocab_size = 0;
@@ -462,18 +383,16 @@ int load_glove(const char *filename) {
             if (token) vocab[vocab_size].vec[dd] = atof(token);
         }
         vocab_size++;
-        if (is_root() && vocab_size % 100000 == 0)
+        if (vocab_size % 100000 == 0)
             printf("  [load] Loaded %d vectors so far...\n", vocab_size);
     }
     fclose(f);
 
-    double t1 = MPI_Wtime();
+    double t1 = now_sec();
     long long load_ops = (long long)vocab_size * EMBED_DIM;
-    if (is_root()) {
-        log_stage("load_glove_replicated", t0, t1, load_ops);
-        printf("  [load] Loaded %d GloVe vectors (%dD) per rank in %.4fs\n",
-               vocab_size, EMBED_DIM, t1-t0);
-    }
+    log_stage("load_glove", t0, t1, load_ops);
+    printf("  [load] Loaded %d GloVe vectors (%dD) in %.4fs\n",
+           vocab_size, EMBED_DIM, t1-t0);
     return 1;
 }
 
@@ -552,84 +471,46 @@ int tokenize(char *text,
 /* ====================== VECTORIZE ====================== */
 void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
                float embeddings[MAX_TOKENS][EMBED_DIM]) {
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: vectorize (MPI)\n");
-        printf("  Complexity: O(T x V) linear scan,  T=%d, V=%d, ranks=%d\n",
-               n_tokens, vocab_size, mpi_size);
-        printf("  Worst-case comparisons: %lld\n", (long long)n_tokens * vocab_size);
-        print_separator('-', 60);
-    }
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: vectorize\n");
+    printf("  Complexity: O(T x V) linear scan,  T=%d, V=%d\n", n_tokens, vocab_size);
+    printf("  Worst-case comparisons: %lld\n", (long long)n_tokens * vocab_size);
+    print_separator('-', 60);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t0 = MPI_Wtime();
-
-    int start, end;
-    mpi_range(n_tokens, &start, &end);
-    float (*local_embeddings)[EMBED_DIM] = calloc(MAX_TOKENS, sizeof(*local_embeddings));
-    int local_found[MAX_TOKENS] = {0};
-    int found_flags[MAX_TOKENS] = {0};
-    if (!local_embeddings) {
-        if (is_root()) printf("ERROR: vectorize local allocation failed\n");
-        MPI_Abort(MPI_COMM_WORLD, 5);
-    }
-
-    int local_hit = 0;
-    long long local_cmp_ops = 0;
-    for (int i = start; i < end; i++) {
+    double t0 = now_sec();
+    int hit = 0;
+    long long cmp_ops = 0;
+    for (int i = 0; i < n_tokens; i++) {
         int found = 0;
         for (int v = 0; v < vocab_size; v++) {
-            local_cmp_ops++;
+            cmp_ops++;
             if (strcmp(tokens[i], vocab[v].word) == 0) {
-                memcpy(local_embeddings[i], vocab[v].vec, sizeof(float)*EMBED_DIM);
-                found = 1;
-                local_found[i] = 1;
-                local_hit++;
+                memcpy(embeddings[i], vocab[v].vec, sizeof(float)*EMBED_DIM);
+                found = 1; hit++;
                 break;
             }
         }
-        if (!found)
-            memset(local_embeddings[i], 0, sizeof(float)*EMBED_DIM);
+        if (!found) {
+            memset(embeddings[i], 0, sizeof(float)*EMBED_DIM);
+            printf("  [oov] '%s' not in GloVe vocab\n", tokens[i]);
+        }
     }
-
-    MPI_Reduce(local_embeddings, embeddings, MAX_TOKENS * EMBED_DIM,
-               MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(local_found, found_flags, MAX_TOKENS,
-               MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    int hit = 0;
-    long long cmp_ops = 0;
-    MPI_Reduce(&local_hit, &hit, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_cmp_ops, &cmp_ops, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    free(local_embeddings);
-
-    MPI_Bcast(embeddings, MAX_TOKENS * EMBED_DIM, MPI_FLOAT, 0, MPI_COMM_WORLD);
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t1 = MPI_Wtime();
-    if (is_root()) {
-        for (int i = 0; i < n_tokens; i++)
-            if (!found_flags[i])
-                printf("  [oov] '%s' not in GloVe vocab\n", tokens[i]);
-        log_stage("tokenize+vectorize_mpi", t0, t1, cmp_ops);
-        printf("  [vec] Coverage: %d/%d tokens hit  comparisons: %lld  time: %.4fs\n",
-               hit, n_tokens, cmp_ops, t1-t0);
-    }
+    double t1 = now_sec();
+    log_stage("tokenize+vectorize", t0, t1, cmp_ops);
+    printf("  [vec] Coverage: %d/%d tokens hit  comparisons: %lld  time: %.4fs\n",
+           hit, n_tokens, cmp_ops, t1-t0);
 }
 
 /* ====================== POSITIONAL ENCODING ====================== */
 void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_tokens) {
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: positional_encoding\n");
-        printf("  Complexity: O(T x D)  ops: %d\n", n_tokens * EMBED_DIM);
-        print_separator('-', 60);
-    }
+    printf("\n");
+    print_separator('-', 60);
+    printf("  STAGE: positional_encoding\n");
+    printf("  Complexity: O(T x D)  ops: %d\n", n_tokens * EMBED_DIM);
+    print_separator('-', 60);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t0 = MPI_Wtime();
+    double t0 = now_sec();
     long long ops = 0;
     for (int pos = 0; pos < n_tokens; pos++) {
         for (int dd = 0; dd < EMBED_DIM; dd++) {
@@ -638,12 +519,9 @@ void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_toke
             ops++;
         }
     }
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t1 = MPI_Wtime();
-    if (is_root()) {
-        log_stage("positional_encoding", t0, t1, ops);
-        printf("  [pe] Done in %.6fs  ops: %lld\n", t1-t0, ops);
-    }
+    double t1 = now_sec();
+    log_stage("positional_encoding", t0, t1, ops);
+    printf("  [pe] Done in %.6fs  ops: %lld\n", t1-t0, ops);
 }
 
 /* ====================== MULTI-HEAD SELF-ATTENTION ====================== */
@@ -750,141 +628,6 @@ void multihead_self_attention(float embeddings[MAX_TOKENS][EMBED_DIM],
     printf("  [attn] Attention stage finished in %.4fs\n", t1-t0);
 
     free(Q); free(K); free(head_attn);
-}
-
-void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
-                                  int n_tokens,
-                                  float attn_weights[MAX_TOKENS][MAX_TOKENS],
-                                  float output[MAX_TOKENS][EMBED_DIM]) {
-    if (is_root()) {
-        printf("\n");
-        print_separator('-', 60);
-        printf("  STAGE: multi_head_self_attention (MPI)\n");
-        printf("  T=%d  H=%d heads  head_dim d=%d  ranks=%d\n",
-               n_tokens, NUM_HEADS, HEAD_DIM, mpi_size);
-        printf("  Project Q,K:  O(T x D^2) = %lld ops each\n",
-               (long long)n_tokens * EMBED_DIM * EMBED_DIM);
-        printf("  QK^T:         O(H x T^2 x d) = %lld ops\n",
-               (long long)NUM_HEADS * n_tokens * n_tokens * HEAD_DIM);
-        printf("  Softmax:      O(H x T^2) = %d ops\n", NUM_HEADS * n_tokens * n_tokens);
-        printf("  Output V:     O(H x T^2 x d) = %lld ops\n",
-               (long long)NUM_HEADS * n_tokens * n_tokens * HEAD_DIM);
-        print_separator('-', 60);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t0 = MPI_Wtime();
-
-    int start, end;
-    mpi_range(n_tokens, &start, &end);
-
-    float (*Q)[EMBED_DIM] = calloc(MAX_TOKENS, sizeof(*Q));
-    float (*K)[EMBED_DIM] = calloc(MAX_TOKENS, sizeof(*K));
-    float (*local_attn)[MAX_TOKENS] = calloc(MAX_TOKENS, sizeof(*local_attn));
-    float (*local_output)[EMBED_DIM] = calloc(MAX_TOKENS, sizeof(*local_output));
-
-    if (!Q || !K || !local_attn || !local_output) {
-        if (is_root()) printf("ERROR: attention alloc failed\n");
-        free(Q); free(K); free(local_attn); free(local_output);
-        MPI_Abort(MPI_COMM_WORLD, 6);
-    }
-
-    long long local_proj_ops = 0, local_qk_ops = 0, local_out_ops = 0;
-
-    double tp0 = MPI_Wtime();
-    for (int i = start; i < end; i++) {
-        for (int j = 0; j < EMBED_DIM; j++) {
-            for (int dd = 0; dd < EMBED_DIM; dd++) {
-                Q[i][j] += embeddings[i][dd] * W_Q[dd][j];
-                K[i][j] += embeddings[i][dd] * W_K[dd][j];
-                local_proj_ops += 2;
-            }
-        }
-    }
-    MPI_Allreduce(MPI_IN_PLACE, Q, MAX_TOKENS * EMBED_DIM, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, K, MAX_TOKENS * EMBED_DIM, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
-    double tp1 = MPI_Wtime();
-
-    float scale = 1.0f / sqrtf((float)HEAD_DIM);
-    if (is_root()) {
-        printf("  [attn] Q/K projected in %.4fs\n", tp1-tp0);
-        printf("  [attn] Attention scale factor: 1/sqrt(%d) = %.6f\n", HEAD_DIM, scale);
-    }
-
-    float self_local[NUM_HEADS] = {0};
-    float self_global[NUM_HEADS] = {0};
-    float scores[MAX_TOKENS];
-
-    for (int h = 0; h < NUM_HEADS; h++) {
-        int offset = h * HEAD_DIM;
-
-        for (int i = start; i < end; i++) {
-            for (int j = 0; j < n_tokens; j++) {
-                float dot = 0.0f;
-                for (int dd = 0; dd < HEAD_DIM; dd++)
-                    dot += Q[i][offset+dd] * K[j][offset+dd];
-                scores[j] = dot * scale;
-                local_qk_ops += HEAD_DIM;
-            }
-
-            float mx = scores[0];
-            for (int j = 1; j < n_tokens; j++)
-                if (scores[j] > mx) mx = scores[j];
-
-            float softmax_sum = 0.0f;
-            for (int j = 0; j < n_tokens; j++) {
-                scores[j] = expf(scores[j] - mx);
-                softmax_sum += scores[j];
-            }
-            for (int j = 0; j < n_tokens; j++)
-                scores[j] /= softmax_sum;
-
-            self_local[h] += scores[i];
-
-            for (int j = 0; j < n_tokens; j++)
-                local_attn[i][j] += scores[j] / NUM_HEADS;
-
-            for (int dd = 0; dd < HEAD_DIM; dd++) {
-                float sum = 0.0f;
-                for (int j = 0; j < n_tokens; j++)
-                    sum += scores[j] * embeddings[j][offset+dd];
-                local_output[i][offset+dd] = sum;
-                local_out_ops += n_tokens;
-            }
-        }
-    }
-
-    MPI_Reduce(local_attn, attn_weights, MAX_TOKENS * MAX_TOKENS,
-               MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(local_output, output, MAX_TOKENS * EMBED_DIM,
-               MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(self_local, self_global, NUM_HEADS,
-               MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    long long proj_ops = 0, qk_ops = 0, out_ops = 0;
-    MPI_Reduce(&local_proj_ops, &proj_ops, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_qk_ops, &qk_ops, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_out_ops, &out_ops, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    double t1 = MPI_Wtime();
-    if (is_root()) {
-        for (int h = 0; h < NUM_HEADS; h++) {
-            float mean_self = (n_tokens > 0) ? self_global[h] / n_tokens : 0.0f;
-            printf("  [attn] head %d/%d  avg self-attention weight = %.4f\n",
-                   h+1, NUM_HEADS, mean_self);
-        }
-        long long total_attn_ops = proj_ops + qk_ops + out_ops;
-        log_stage("self_attention_mpi", t0, t1, total_attn_ops);
-        printf("  [attn] Total ops - project:%lld  QKt:%lld  output:%lld  sum:%lld\n",
-               proj_ops, qk_ops, out_ops, total_attn_ops);
-        printf("  [attn] Attention stage finished in %.4fs\n", t1-t0);
-    }
-
-    free(Q);
-    free(K);
-    free(local_attn);
-    free(local_output);
 }
 
 /* ====================== TOKEN IMPORTANCE ====================== */
@@ -1153,15 +896,10 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
 /* ====================== MAIN ====================== */
 int main() {
-    MPI_Init(NULL, NULL);
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-
     char paragraph[MAX_PARAGRAPH_CHARS];
     char tokens[MAX_TOKENS][MAX_WORD_LEN];
     char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN];
     int token_sentence[MAX_TOKENS];
-    int n_tokens = 0;
     int n_sentences = 0;
 
     float (*embeddings)[EMBED_DIM] = malloc(MAX_TOKENS * sizeof(*embeddings));
@@ -1170,95 +908,44 @@ int main() {
     SummaryMetrics metrics;
     char summary[MAX_SUMMARY_CHARS];
 
-    if (!embeddings || !attn_weights || !output) {
-        if (is_root()) printf("ERROR: main allocation failed\n");
-        MPI_Abort(MPI_COMM_WORLD, 7);
-    }
+    printf("\n");
+    print_separator('=', 70);
+    printf("  Attention Summarizer: GloVe 300D + PCA Whitening\n");
+    printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d\n",
+           EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM);
+    printf("  JACOBI_SWEEPS=%d  MAX_TOKENS=%d\n", JACOBI_SWEEPS, MAX_TOKENS);
+    print_separator('=', 70);
 
-    if (is_root()) {
-        printf("\n");
-        print_separator('=', 70);
-        printf("  MPI Attention Summarizer: GloVe 300D + PCA Whitening\n");
-        printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d  MPI_RANKS=%d\n",
-               EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM, mpi_size);
-        printf("  JACOBI_SWEEPS=%d  MAX_TOKENS=%d\n", JACOBI_SWEEPS, MAX_TOKENS);
-        print_separator('=', 70);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
     double total_start = now_sec();
 
-    int load_ok = load_glove("glove.6B.300d.txt");
-    int all_load_ok = 0;
-    MPI_Allreduce(&load_ok, &all_load_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if (!all_load_ok) {
-        MPI_Finalize();
-        return 1;
-    }
-
-    int min_vocab_size = 0, max_vocab_size = 0;
-    MPI_Allreduce(&vocab_size, &min_vocab_size, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(&vocab_size, &max_vocab_size, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    if (min_vocab_size != max_vocab_size) {
-        if (is_root())
-            printf("ERROR: MPI ranks loaded different vocab sizes: min=%d max=%d\n",
-                   min_vocab_size, max_vocab_size);
-        MPI_Finalize();
-        return 1;
-    }
+    if (!load_glove("glove.6B.300d.txt")) return 1;
 
     compute_pca_projections(total_start);
 
-    int input_ok = 1;
-    if (is_root()) {
-        printf("\nPaste paragraph (single line, end with Enter):\n");
-        if (!fgets(paragraph, sizeof(paragraph), stdin)) {
-            printf("ERROR: failed to read input paragraph\n");
-            input_ok = 0;
-        }
+    printf("\nPaste paragraph (single line, end with Enter):\n");
+    fgets(paragraph, sizeof(paragraph), stdin);
 
-        if (input_ok) {
-            n_tokens = tokenize(paragraph, tokens, token_sentence, sentences, &n_sentences);
-            printf("\n  [tokenize] %d tokens extracted from %d sentences\n", n_tokens, n_sentences);
-        }
-    }
-    MPI_Bcast(&input_ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (!input_ok) {
-        free(vocab); free(embeddings); free(attn_weights); free(output);
-        MPI_Finalize();
-        return 1;
-    }
-
-    MPI_Bcast(&n_tokens, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&n_sentences, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(tokens, MAX_TOKENS * MAX_WORD_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
-    MPI_Bcast(token_sentence, MAX_TOKENS, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(sentences, MAX_SENTENCES * MAX_SENTENCE_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
+    int n_tokens = tokenize(paragraph, tokens, token_sentence, sentences, &n_sentences);
+    printf("\n  [tokenize] %d tokens extracted from %d sentences\n", n_tokens, n_sentences);
 
     vectorize(tokens, n_tokens, embeddings);
     add_positional_encoding(embeddings, n_tokens);
-    multihead_self_attention_mpi(embeddings, n_tokens, attn_weights, output);
+    multihead_self_attention(embeddings, n_tokens, attn_weights, output);
+    summarize(tokens, token_sentence, sentences, n_sentences,
+              n_tokens, attn_weights, output, &metrics, summary);
 
-    if (is_root()) {
-        summarize(tokens, token_sentence, sentences, n_sentences,
-                  n_tokens, attn_weights, output, &metrics, summary);
+    printf("\n%s\n", summary);
 
-        printf("\n%s\n", summary);
+    /* Top-10 most important words by attention output norm */
+    print_top_words(tokens, n_tokens, output);
 
-        /* Top-10 most important words by attention output norm */
-        print_top_words(tokens, n_tokens, output);
+    /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
+    print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
+                            attn_weights, output, &metrics);
 
-        /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
-        print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
-                                attn_weights, output, &metrics);
-
-    }
-
-    /* Print the full timing, complexity, and resource reports. All ranks enter
-       this function so MPI resource reductions are valid; only root prints. */
+    /* Print the full timing + complexity report */
     print_report(total_start);
 
     free(vocab); free(embeddings); free(attn_weights); free(output);
-    MPI_Finalize();
     return 0;
 }

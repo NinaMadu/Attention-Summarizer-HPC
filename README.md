@@ -91,3 +91,44 @@ That file includes:
 - parallelized sections
 - correctness and performance notes
 
+
+
+## Running in Ninada's Laptop:
+su - mpiuser
+cd "/mnt/d/7 SEM/HPC/Project/Attention-Summarizer-HPC"
+
+# Run MPI
+Using make file:
+
+make mpi-mode
+mpirun -np 2 ./mpi/summarizer_mpi_mode
+
+Mannualy:
+
+mpicc -std=gnu11 -O2 mpi/attention_summarizer_mpi_new.c -o mpi/summarizer_mpi_mode -lm
+mpirun -np 2 ./mpi/summarizer_mpi_mode
+
+# Run MPI/OpenMP Hybrid
+Using make file:
+
+make mpi_openmp_hybrid
+OMP_NUM_THREADS=4 mpirun -np 2 ./mpi/mpi_openmp_hybrid
+
+Mannualy:
+
+make run-mpi_openmp_hybrid MPI_RANKS=2 OMP_THREADS=4
+
+# Run OpenMP
+Using make file:
+
+make openmp-mode
+make check-openmp-mode OMP_THREADS=4
+
+Mannualy:
+
+OMP_NUM_THREADS=4 ./openmp/summarizer_openmp_mode
+
+
+
+
+

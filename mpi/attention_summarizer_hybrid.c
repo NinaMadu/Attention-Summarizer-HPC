@@ -5,6 +5,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <mpi.h>
+#include <omp.h>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -158,7 +159,7 @@ static void print_report(double total_start) {
 
 /* ====================== JACOBI PROGRESS LOGGING ====================== */
 /* Reports convergence every 10 sweeps so you can see the off-diagonal
-   norm decreasing — key to justifying JACOBI_SWEEPS in HPC context. */
+   norm decreasing - key to justifying JACOBI_SWEEPS in HPC context. */
 static int jacobi_verbose = 1;
 
 /* ====================== STRUCTS ====================== */
@@ -274,9 +275,9 @@ void compute_pca_projections(double total_start) {
     if (is_root()) {
         printf("\n");
         print_separator('-', 60);
-        printf("  STAGE: covariance_matrix (MPI)\n");
-        printf("  Complexity: O(V x D^2)  =>  V=%d, D=%d, ranks=%d\n",
-               vocab_size, EMBED_DIM, mpi_size);
+        printf("  STAGE: covariance_matrix (Hybrid MPI + OpenMP)\n");
+        printf("  Complexity: O(V x D^2)  =>  V=%d, D=%d, ranks=%d, threads/rank=%d\n",
+               vocab_size, EMBED_DIM, mpi_size, omp_get_max_threads());
         printf("  Expected ops: ~%.2fB\n",
                (double)vocab_size * EMBED_DIM * EMBED_DIM / 2.0 / 1e9);
         print_separator('-', 60);
@@ -290,9 +291,21 @@ void compute_pca_projections(double total_start) {
 
     float local_mean[EMBED_DIM] = {0};
     float mean[EMBED_DIM] = {0};
-    for (int v = start; v < end; v++)
-        for (int dd = 0; dd < EMBED_DIM; dd++)
-            local_mean[dd] += vocab[v].vec[dd];
+    #pragma omp parallel
+    {
+        float thread_mean[EMBED_DIM] = {0};
+
+        #pragma omp for nowait
+        for (int v = start; v < end; v++)
+            for (int dd = 0; dd < EMBED_DIM; dd++)
+                thread_mean[dd] += vocab[v].vec[dd];
+
+        #pragma omp critical
+        {
+            for (int dd = 0; dd < EMBED_DIM; dd++)
+                local_mean[dd] += thread_mean[dd];
+        }
+    }
 
     MPI_Reduce(local_mean, mean, EMBED_DIM, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
     if (is_root())
@@ -309,15 +322,46 @@ void compute_pca_projections(double total_start) {
     }
 
     long long local_cov_ops = 0;
-    for (int v = start; v < end; v++) {
-        float centered[EMBED_DIM];
-        for (int dd = 0; dd < EMBED_DIM; dd++)
-            centered[dd] = vocab[v].vec[dd] - mean[dd];
-        for (int i = 0; i < EMBED_DIM; i++)
-            for (int j = i; j < EMBED_DIM; j++) {
-                local_cov[i][j] += centered[i] * centered[j];
-                local_cov_ops++;
+    int cov_alloc_failed = 0;
+    #pragma omp parallel
+    {
+        float (*thread_cov)[EMBED_DIM] = calloc(EMBED_DIM, sizeof(*thread_cov));
+        long long thread_cov_ops = 0;
+
+        if (!thread_cov) {
+            #pragma omp atomic write
+            cov_alloc_failed = 1;
+        }
+
+        #pragma omp for nowait
+        for (int v = start; v < end; v++) {
+            if (thread_cov) {
+                float centered[EMBED_DIM];
+                for (int dd = 0; dd < EMBED_DIM; dd++)
+                    centered[dd] = vocab[v].vec[dd] - mean[dd];
+                for (int i = 0; i < EMBED_DIM; i++)
+                    for (int j = i; j < EMBED_DIM; j++) {
+                        thread_cov[i][j] += centered[i] * centered[j];
+                        thread_cov_ops++;
+                    }
             }
+        }
+
+        if (thread_cov) {
+            #pragma omp critical
+            {
+                for (int i = 0; i < EMBED_DIM; i++)
+                    for (int j = i; j < EMBED_DIM; j++)
+                        local_cov[i][j] += thread_cov[i][j];
+                local_cov_ops += thread_cov_ops;
+            }
+        }
+        free(thread_cov);
+    }
+
+    if (cov_alloc_failed) {
+        if (is_root()) printf("ERROR: thread-local covariance allocation failed\n");
+        MPI_Abort(MPI_COMM_WORLD, 4);
     }
 
     MPI_Reduce(local_cov, cov, EMBED_DIM * EMBED_DIM, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -337,8 +381,8 @@ void compute_pca_projections(double total_start) {
     MPI_Barrier(MPI_COMM_WORLD);
     double t1 = MPI_Wtime();
     if (is_root()) {
-        log_stage("covariance_matrix_mpi", t0, t1, cov_ops);
-        printf("  [cov] MPI finished in %.4fs  total ops: %lld\n", t1-t0, cov_ops);
+        log_stage("covariance_matrix_hybrid", t0, t1, cov_ops);
+        printf("  [cov] Hybrid finished in %.4fs  total ops: %lld\n", t1-t0, cov_ops);
     }
 
     if (is_root()) {
@@ -384,6 +428,7 @@ void compute_pca_projections(double total_start) {
             printf("    eigenvalue[%d] = %.6f\n", pass, ev_copy[pass]);
         }
 
+        #pragma omp parallel for collapse(2) reduction(+:w_ops)
         for (int i = 0; i < EMBED_DIM; i++) {
             for (int j = 0; j < EMBED_DIM; j++) {
                 float scale = (eigvals[j] > EIG_FLOOR) ? 1.0f / sqrtf(eigvals[j]) : 0.0f;
@@ -393,7 +438,7 @@ void compute_pca_projections(double total_start) {
             }
         }
         double t5 = MPI_Wtime();
-        log_stage("build_whitening_W", t4, t5, w_ops);
+        log_stage("build_whitening_W_hybrid", t4, t5, w_ops);
         printf("  [pca] W_Q / W_K built in %.6fs\n", t5-t4);
 
         free(cov);
@@ -410,16 +455,18 @@ void project_embeddings(float in[MAX_TOKENS][EMBED_DIM],
                         float out[MAX_TOKENS][EMBED_DIM],
                         int n_tokens,
                         long long *ops) {
-    *ops = 0;
+    long long local_ops = 0;
+    #pragma omp parallel for reduction(+:local_ops)
     for (int i = 0; i < n_tokens; i++) {
         for (int j = 0; j < EMBED_DIM; j++) {
             out[i][j] = 0.0f;
             for (int dd = 0; dd < EMBED_DIM; dd++) {
                 out[i][j] += in[i][dd] * W[dd][j];
-                (*ops)++;
+                local_ops++;
             }
         }
     }
+    *ops = local_ops;
 }
 
 /* ====================== LOAD GLOVE ====================== */
@@ -427,10 +474,10 @@ int load_glove(const char *filename) {
     if (is_root()) {
         printf("\n");
         print_separator('-', 60);
-        printf("  STAGE: load_glove (MPI replicated)\n");
+        printf("  STAGE: load_glove (replicated, serial per rank)\n");
         printf("  Complexity: O(V x D) reads per rank, V<=%d, D=%d, ranks=%d\n",
                MAX_VOCAB, EMBED_DIM, mpi_size);
-        printf("  Accuracy mode: every rank reads the same file in serial order\n");
+        printf("  Kept serial inside each rank: text file parsing is I/O-bound and order-sensitive\n");
         print_separator('-', 60);
     }
 
@@ -555,9 +602,9 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
     if (is_root()) {
         printf("\n");
         print_separator('-', 60);
-        printf("  STAGE: vectorize (MPI)\n");
-        printf("  Complexity: O(T x V) linear scan,  T=%d, V=%d, ranks=%d\n",
-               n_tokens, vocab_size, mpi_size);
+        printf("  STAGE: vectorize (Hybrid MPI + OpenMP)\n");
+        printf("  Complexity: O(T x V) linear scan,  T=%d, V=%d, ranks=%d, threads/rank=%d\n",
+               n_tokens, vocab_size, mpi_size, omp_get_max_threads());
         printf("  Worst-case comparisons: %lld\n", (long long)n_tokens * vocab_size);
         print_separator('-', 60);
     }
@@ -577,6 +624,7 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
 
     int local_hit = 0;
     long long local_cmp_ops = 0;
+    #pragma omp parallel for reduction(+:local_hit,local_cmp_ops)
     for (int i = start; i < end; i++) {
         int found = 0;
         for (int v = 0; v < vocab_size; v++) {
@@ -612,7 +660,7 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
         for (int i = 0; i < n_tokens; i++)
             if (!found_flags[i])
                 printf("  [oov] '%s' not in GloVe vocab\n", tokens[i]);
-        log_stage("tokenize+vectorize_mpi", t0, t1, cmp_ops);
+        log_stage("tokenize+vectorize_hybrid", t0, t1, cmp_ops);
         printf("  [vec] Coverage: %d/%d tokens hit  comparisons: %lld  time: %.4fs\n",
                hit, n_tokens, cmp_ops, t1-t0);
     }
@@ -631,6 +679,7 @@ void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_toke
     MPI_Barrier(MPI_COMM_WORLD);
     double t0 = MPI_Wtime();
     long long ops = 0;
+    #pragma omp parallel for collapse(2) reduction(+:ops)
     for (int pos = 0; pos < n_tokens; pos++) {
         for (int dd = 0; dd < EMBED_DIM; dd++) {
             float angle = pos / powf(10000.0f, (2.0f*(dd/2)) / (float)EMBED_DIM);
@@ -745,7 +794,7 @@ void multihead_self_attention(float embeddings[MAX_TOKENS][EMBED_DIM],
     double t1 = now_sec();
     long long total_attn_ops = proj_ops + qk_ops + out_ops;
     log_stage("self_attention", t0, t1, total_attn_ops);
-    printf("  [attn] Total ops — project:%lld  QKt:%lld  output:%lld  sum:%lld\n",
+    printf("  [attn] Total ops - project:%lld  QKt:%lld  output:%lld  sum:%lld\n",
            proj_ops, qk_ops, out_ops, total_attn_ops);
     printf("  [attn] Attention stage finished in %.4fs\n", t1-t0);
 
@@ -759,9 +808,9 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
     if (is_root()) {
         printf("\n");
         print_separator('-', 60);
-        printf("  STAGE: multi_head_self_attention (MPI)\n");
-        printf("  T=%d  H=%d heads  head_dim d=%d  ranks=%d\n",
-               n_tokens, NUM_HEADS, HEAD_DIM, mpi_size);
+        printf("  STAGE: multi_head_self_attention (Hybrid MPI + OpenMP)\n");
+        printf("  T=%d  H=%d heads  head_dim d=%d  ranks=%d  threads/rank=%d\n",
+               n_tokens, NUM_HEADS, HEAD_DIM, mpi_size, omp_get_max_threads());
         printf("  Project Q,K:  O(T x D^2) = %lld ops each\n",
                (long long)n_tokens * EMBED_DIM * EMBED_DIM);
         printf("  QK^T:         O(H x T^2 x d) = %lld ops\n",
@@ -792,13 +841,18 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
     long long local_proj_ops = 0, local_qk_ops = 0, local_out_ops = 0;
 
     double tp0 = MPI_Wtime();
+    #pragma omp parallel for reduction(+:local_proj_ops)
     for (int i = start; i < end; i++) {
         for (int j = 0; j < EMBED_DIM; j++) {
+            float q_sum = 0.0f;
+            float k_sum = 0.0f;
             for (int dd = 0; dd < EMBED_DIM; dd++) {
-                Q[i][j] += embeddings[i][dd] * W_Q[dd][j];
-                K[i][j] += embeddings[i][dd] * W_K[dd][j];
+                q_sum += embeddings[i][dd] * W_Q[dd][j];
+                k_sum += embeddings[i][dd] * W_K[dd][j];
                 local_proj_ops += 2;
             }
+            Q[i][j] = q_sum;
+            K[i][j] = k_sum;
         }
     }
     MPI_Allreduce(MPI_IN_PLACE, Q, MAX_TOKENS * EMBED_DIM, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
@@ -813,12 +867,15 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
 
     float self_local[NUM_HEADS] = {0};
     float self_global[NUM_HEADS] = {0};
-    float scores[MAX_TOKENS];
 
     for (int h = 0; h < NUM_HEADS; h++) {
         int offset = h * HEAD_DIM;
+        float self_sum = 0.0f;
 
+        #pragma omp parallel for reduction(+:local_qk_ops,local_out_ops,self_sum)
         for (int i = start; i < end; i++) {
+            float scores[MAX_TOKENS];
+
             for (int j = 0; j < n_tokens; j++) {
                 float dot = 0.0f;
                 for (int dd = 0; dd < HEAD_DIM; dd++)
@@ -839,7 +896,7 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
             for (int j = 0; j < n_tokens; j++)
                 scores[j] /= softmax_sum;
 
-            self_local[h] += scores[i];
+            self_sum += scores[i];
 
             for (int j = 0; j < n_tokens; j++)
                 local_attn[i][j] += scores[j] / NUM_HEADS;
@@ -852,6 +909,8 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
                 local_out_ops += n_tokens;
             }
         }
+
+        self_local[h] = self_sum;
     }
 
     MPI_Reduce(local_attn, attn_weights, MAX_TOKENS * MAX_TOKENS,
@@ -875,7 +934,7 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
                    h+1, NUM_HEADS, mean_self);
         }
         long long total_attn_ops = proj_ops + qk_ops + out_ops;
-        log_stage("self_attention_mpi", t0, t1, total_attn_ops);
+        log_stage("self_attention_hybrid", t0, t1, total_attn_ops);
         printf("  [attn] Total ops - project:%lld  QKt:%lld  output:%lld  sum:%lld\n",
                proj_ops, qk_ops, out_ops, total_attn_ops);
         printf("  [attn] Attention stage finished in %.4fs\n", t1-t0);
@@ -920,6 +979,7 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
     printf("  [sum] Detected %d sentences\n", n_sent);
 
+    #pragma omp parallel for
     for (int j = 0; j < n_tokens; j++) {
         for (int i = 0; i < n_tokens; i++)
             metrics->token_score[j] += attn_weights[i][j];
@@ -1153,7 +1213,8 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
 /* ====================== MAIN ====================== */
 int main() {
-    MPI_Init(NULL, NULL);
+    int provided = 0;
+    MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
@@ -1178,9 +1239,12 @@ int main() {
     if (is_root()) {
         printf("\n");
         print_separator('=', 70);
-        printf("  MPI Attention Summarizer: GloVe 300D + PCA Whitening\n");
-        printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d  MPI_RANKS=%d\n",
-               EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM, mpi_size);
+        printf("  Hybrid MPI + OpenMP Attention Summarizer: GloVe 300D + PCA Whitening\n");
+        printf("  Config: EMBED_DIM=%d  MAX_VOCAB=%d  NUM_HEADS=%d  HEAD_DIM=%d\n",
+               EMBED_DIM, MAX_VOCAB, NUM_HEADS, HEAD_DIM);
+        printf("  MPI_RANKS=%d  OpenMP threads/rank=%d  MPI_THREAD_FUNNELED=%s\n",
+               mpi_size, omp_get_max_threads(),
+               (provided >= MPI_THREAD_FUNNELED) ? "yes" : "no");
         printf("  JACOBI_SWEEPS=%d  MAX_TOKENS=%d\n", JACOBI_SWEEPS, MAX_TOKENS);
         print_separator('=', 70);
     }
