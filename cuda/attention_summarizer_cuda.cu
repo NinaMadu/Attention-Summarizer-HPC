@@ -12,7 +12,7 @@
  *  Produces identical COMPARE_* output for numerical verification
  *  against the serial baseline (attention_summarizer_new.c).
  *
- *  Build:  nvcc -O2 -arch=sm_120 cuda/attention_summarizer_cuda.cu
+ *  Build:  nvcc -O2 cuda/attention_summarizer_cuda.cu
  *               -o cuda/summarizer_cuda
  *===========================================================================*/
 
@@ -35,12 +35,15 @@
 
 /* ====================== CONSTANTS ====================== */
 
-#define MAX_TOKENS     512
-#define MAX_WORD_LEN   32
-#define MAX_SENTENCES  30
-#define EMBED_DIM      200
+#define MAX_TOKENS     1024
+#define MAX_WORD_LEN   64
+#define MAX_SENTENCES  128
+#define MAX_SENTENCE_LEN 16384
+#define MAX_PARAGRAPH_CHARS 65536
+#define MAX_SUMMARY_CHARS   65536
+#define EMBED_DIM      300
 #define MAX_VOCAB      500000
-#define NUM_HEADS      8
+#define NUM_HEADS      12
 #define HEAD_DIM       (EMBED_DIM / NUM_HEADS)
 #define JACOBI_SWEEPS  100
 #define EIG_FLOOR      1e-6f
@@ -229,17 +232,18 @@ __global__ void covariance_kernel(const float *vecs, const float *mean,
 
 /*  K3: Project embeddings — matrix multiply   out = in × W
  *      Grid : n_tokens blocks (one block per token)
- *      Block: BLOCK_SIZE threads (each computes one output dimension)      */
+ *      Block: BLOCK_SIZE threads (threads stride over output dimensions)   */
 __global__ void project_kernel(const float *in, const float *W, float *out,
                                 int n_tokens) {
     int i = blockIdx.x;
-    int j = threadIdx.x;
-    if (i >= n_tokens || j >= EMBED_DIM) return;
+    if (i >= n_tokens) return;
 
-    float sum = 0.0f;
-    for (int k = 0; k < EMBED_DIM; k++)
-        sum += in[i * EMBED_DIM + k] * W[k * EMBED_DIM + j];
-    out[i * EMBED_DIM + j] = sum;
+    for (int j = threadIdx.x; j < EMBED_DIM; j += blockDim.x) {
+        float sum = 0.0f;
+        for (int k = 0; k < EMBED_DIM; k++)
+            sum += in[i * EMBED_DIM + k] * W[k * EMBED_DIM + j];
+        out[i * EMBED_DIM + j] = sum;
+    }
 }
 
 /*  K4: Scaled dot-product  QK^T  for all heads
@@ -529,7 +533,7 @@ int load_glove(const char *filename) {
     vocab = (Embedding *)malloc(MAX_VOCAB * sizeof(Embedding));
     if (!vocab) return 0;
 
-    char line[8192];
+    char line[16384];
     vocab_size = 0;
     while (fgets(line, sizeof(line), f) && vocab_size < MAX_VOCAB) {
         char *token = strtok(line, " ");
@@ -575,7 +579,7 @@ static void trim_sentence(char *s) {
 int tokenize(char *text,
              char tokens[MAX_TOKENS][MAX_WORD_LEN],
              int token_sentence[MAX_TOKENS],
-             char sentences[MAX_SENTENCES][1024],
+             char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
              int *n_sentences) {
     int n = 0;
     int s = 0;
@@ -590,7 +594,7 @@ int tokenize(char *text,
         char c = text[i];
 
         if (c != '\0' && !is_sentence_delim(c) && s < MAX_SENTENCES) {
-            if (sent_len < 1023) {
+            if (sent_len < MAX_SENTENCE_LEN - 1) {
                 sentences[s][sent_len++] = c;
                 sentences[s][sent_len] = '\0';
             }
@@ -830,7 +834,7 @@ float token_importance(float *output_vec) {
 /* ====================== SUMMARIZE ====================== */
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
-               char sentences[MAX_SENTENCES][1024],
+               char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
                int n_sent,
                int n_tokens,
                float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -896,7 +900,7 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     printf("  [sum] Finished in %.6fs\n", t1 - t0);
 
     summary[0] = '\0';
-    strcat(summary, "=== SUMMARY (GloVe 200D + PCA Whitening Attention Centrality) ===\n");
+    strcat(summary, "=== SUMMARY (GloVe 300D + PCA Whitening Attention Centrality) ===\n");
     for (int k = 0; k < 2; k++)
         if (order[k] != -1)
             { strcat(summary, sentences[order[k]]); strcat(summary, ".\n"); }
@@ -1078,9 +1082,9 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
  *                              MAIN
  * =========================================================================== */
 int main() {
-    char paragraph[8192];
+    char paragraph[MAX_PARAGRAPH_CHARS];
     char tokens[MAX_TOKENS][MAX_WORD_LEN];
-    char sentences[MAX_SENTENCES][1024];
+    char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN];
     int token_sentence[MAX_TOKENS];
     int n_sentences = 0;
 
@@ -1088,7 +1092,7 @@ int main() {
     float (*attn_weights)[MAX_TOKENS] = (float (*)[MAX_TOKENS])malloc(MAX_TOKENS * sizeof(*attn_weights));
     float (*output)[EMBED_DIM]     = (float (*)[EMBED_DIM])malloc(MAX_TOKENS * sizeof(*output));
     SummaryMetrics metrics;
-    char summary[4096];
+    char summary[MAX_SUMMARY_CHARS];
 
     /* ---- GPU info ---- */
     int device_count = 0;
@@ -1103,7 +1107,7 @@ int main() {
 
     printf("\n");
     print_separator('=', 70);
-    printf("  Attention Summarizer: GloVe 200D + PCA Whitening  [CUDA]\n");
+    printf("  Attention Summarizer: GloVe 300D + PCA Whitening  [CUDA]\n");
     printf("  GPU: %s  (SM %d.%d, %d SMs, %zu MB VRAM)\n",
            prop.name, prop.major, prop.minor,
            prop.multiProcessorCount,
@@ -1116,7 +1120,7 @@ int main() {
 
     double total_start = now_sec();
 
-    if (!load_glove("glove.6B.200d.txt")) return 1;
+    if (!load_glove("glove.6B.300d.txt")) return 1;
 
     compute_pca_projections_cuda(total_start);
 
