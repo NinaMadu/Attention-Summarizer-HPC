@@ -48,6 +48,8 @@
 #define JACOBI_SWEEPS  100
 #define EIG_FLOOR      1e-6f
 #define BLOCK_SIZE     256
+#define TRANSPOSE_TILE_DIM 32
+#define TRANSPOSE_BLOCK_ROWS 8
 
 /* ====================== CUDA ERROR CHECKING ====================== */
 
@@ -183,7 +185,7 @@ __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
 
     float local_sum = 0.0f;
     for (int v = tid; v < V; v += blockDim.x)
-        local_sum += vecs[v * EMBED_DIM + d];
+        local_sum += vecs[(long long)d * V + v];
 
     sdata[tid] = local_sum;
     __syncthreads();
@@ -202,8 +204,14 @@ __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
  *      Grid : (EMBED_DIM, EMBED_DIM)      Block: BLOCK_SIZE                */
 __global__ void covariance_kernel(const float *vecs, const float *mean,
                                    float *cov, int V) {
-    int i = blockIdx.x;
-    int j = blockIdx.y;
+    int pair_idx = (int)blockIdx.x;
+    int i = (int)((sqrtf(8.0f * (float)pair_idx + 1.0f) - 1.0f) * 0.5f);
+    int row_start = i * (i + 1) / 2;
+    if (row_start > pair_idx) {
+        i--;
+        row_start = i * (i + 1) / 2;
+    }
+    int j = pair_idx - row_start;
     if (i >= EMBED_DIM || j > i) return;
 
     __shared__ float sdata[BLOCK_SIZE];
@@ -212,8 +220,8 @@ __global__ void covariance_kernel(const float *vecs, const float *mean,
     float mi = mean[i], mj = mean[j];
     float local_sum = 0.0f;
     for (int v = tid; v < V; v += blockDim.x)
-        local_sum += (vecs[v * EMBED_DIM + i] - mi)
-                   * (vecs[v * EMBED_DIM + j] - mj);
+        local_sum += (vecs[(long long)i * V + v] - mi)
+                   * (vecs[(long long)j * V + v] - mj);
 
     sdata[tid] = local_sum;
     __syncthreads();
@@ -233,6 +241,32 @@ __global__ void covariance_kernel(const float *vecs, const float *mean,
 /*  K3: Project embeddings — matrix multiply   out = in × W
  *      Grid : n_tokens blocks (one block per token)
  *      Block: BLOCK_SIZE threads (threads stride over output dimensions)   */
+/*  Convert uploaded vocab vectors from row-major [V][D] to dimension-major [D][V].
+ *  Covariance then reads contiguous values across vocabulary rows. */
+__global__ void transpose_vocab_kernel(const float *row_major, float *dim_major, int V) {
+    __shared__ float tile[TRANSPOSE_TILE_DIM][TRANSPOSE_TILE_DIM + 1];
+
+    int in_d = blockIdx.x * TRANSPOSE_TILE_DIM + threadIdx.x;
+    int in_v = blockIdx.y * TRANSPOSE_TILE_DIM + threadIdx.y;
+
+    for (int r = 0; r < TRANSPOSE_TILE_DIM; r += TRANSPOSE_BLOCK_ROWS) {
+        int v = in_v + r;
+        if (in_d < EMBED_DIM && v < V)
+            tile[threadIdx.y + r][threadIdx.x] = row_major[(long long)v * EMBED_DIM + in_d];
+    }
+
+    __syncthreads();
+
+    int out_v = blockIdx.y * TRANSPOSE_TILE_DIM + threadIdx.x;
+    int out_d = blockIdx.x * TRANSPOSE_TILE_DIM + threadIdx.y;
+
+    for (int r = 0; r < TRANSPOSE_TILE_DIM; r += TRANSPOSE_BLOCK_ROWS) {
+        int d = out_d + r;
+        if (d < EMBED_DIM && out_v < V)
+            dim_major[(long long)d * V + out_v] = tile[threadIdx.x][threadIdx.y + r];
+    }
+}
+
 __global__ void project_kernel(const float *in, const float *W, float *out,
                                 int n_tokens) {
     int i = blockIdx.x;
@@ -318,6 +352,31 @@ __global__ void average_heads_kernel(const float *head_attn, float *avg_attn,
     for (int h = 0; h < NUM_HEADS; h++)
         sum += head_attn[(long long)h * MAX_TOKENS * MAX_TOKENS + i * MAX_TOKENS + j];
     avg_attn[i * MAX_TOKENS + j] = sum / NUM_HEADS;
+}
+
+/*  K8: Per-head average diagonal attention for diagnostics.
+ *      Keeps the existing printed metric without copying H x T x T scores. */
+__global__ void head_diag_mean_kernel(const float *head_attn, float *diag_mean,
+                                      int n_tokens) {
+    int h = blockIdx.x;
+    int tid = threadIdx.x;
+    if (h >= NUM_HEADS) return;
+
+    __shared__ float sdata[BLOCK_SIZE];
+    float local_sum = 0.0f;
+    for (int i = tid; i < n_tokens; i += blockDim.x)
+        local_sum += head_attn[(long long)h * MAX_TOKENS * MAX_TOKENS
+                               + i * MAX_TOKENS + i];
+
+    sdata[tid] = local_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+
+    if (tid == 0) diag_mean[h] = sdata[0] / n_tokens;
 }
 
 /* ===========================================================================
@@ -413,39 +472,80 @@ void compute_pca_projections_cuda(double total_start) {
 
     double t0 = now_sec();
 
-    /* Extract float vectors from AoS vocab[] into flat SoA array */
-    float *flat_vecs = (float *)malloc((size_t)vocab_size * EMBED_DIM * sizeof(float));
-    if (!flat_vecs) { printf("ERROR: flat_vecs alloc failed\n"); return; }
+    /* Extract float vectors from AoS vocab[] into row-major pinned upload memory. */
+    size_t vecs_bytes = (size_t)vocab_size * EMBED_DIM * sizeof(float);
+    float *flat_vecs = NULL;
+    int flat_vecs_pinned = 1;
+    cudaError_t host_err = cudaMallocHost((void **)&flat_vecs, vecs_bytes);
+    if (host_err != cudaSuccess) {
+        flat_vecs_pinned = 0;
+        flat_vecs = (float *)malloc(vecs_bytes);
+        if (!flat_vecs) {
+            printf("ERROR: flat_vecs alloc failed\n");
+            return;
+        }
+        printf("  [cov] Pinned host allocation unavailable (%s); using pageable memory.\n",
+               cudaGetErrorString(host_err));
+        cudaGetLastError();
+    }
     for (int v = 0; v < vocab_size; v++)
         memcpy(flat_vecs + (size_t)v * EMBED_DIM, vocab[v].vec, EMBED_DIM * sizeof(float));
 
     /* Allocate GPU memory */
-    float *d_vecs, *d_mean, *d_cov;
-    size_t vecs_bytes = (size_t)vocab_size * EMBED_DIM * sizeof(float);
+    float *d_vecs_row, *d_vecs, *d_mean, *d_cov;
+    CUDA_CHECK(cudaMalloc(&d_vecs_row, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_vecs, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_mean, EMBED_DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cov, EMBED_DIM * EMBED_DIM * sizeof(float)));
 
     /* Upload vectors to GPU */
-    CUDA_CHECK(cudaMemcpy(d_vecs, flat_vecs, vecs_bytes, cudaMemcpyHostToDevice));
-    free(flat_vecs);
+    CUDA_CHECK(cudaMemcpy(d_vecs_row, flat_vecs, vecs_bytes, cudaMemcpyHostToDevice));
+    if (flat_vecs_pinned) cudaFreeHost(flat_vecs);
+    else free(flat_vecs);
+
+    /* Convert once on GPU so mean/covariance read contiguous vocabulary values. */
+    dim3 tr_block(TRANSPOSE_TILE_DIM, TRANSPOSE_BLOCK_ROWS);
+    dim3 tr_grid((EMBED_DIM + TRANSPOSE_TILE_DIM - 1) / TRANSPOSE_TILE_DIM,
+                 (vocab_size + TRANSPOSE_TILE_DIM - 1) / TRANSPOSE_TILE_DIM);
+    transpose_vocab_kernel<<<tr_grid, tr_block>>>(d_vecs_row, d_vecs, vocab_size);
+    CUDA_CHECK(cudaPeekAtLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaFree(d_vecs_row);
 
     /* K1: compute mean vector */
     printf("  [cov] Computing mean vector on GPU (%d blocks x %d threads)...\n",
            EMBED_DIM, BLOCK_SIZE);
     compute_mean_kernel<<<EMBED_DIM, BLOCK_SIZE>>>(d_vecs, d_mean, vocab_size);
+    CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     /* K2: compute covariance matrix */
-    dim3 cov_grid(EMBED_DIM, EMBED_DIM);
-    printf("  [cov] Computing %dx%d covariance matrix on GPU (%d blocks x %d threads)...\n",
-           EMBED_DIM, EMBED_DIM, EMBED_DIM * EMBED_DIM, BLOCK_SIZE);
+    int cov_pairs = EMBED_DIM * (EMBED_DIM + 1) / 2;
+    dim3 cov_grid(cov_pairs);
+    printf("  [cov] Computing %dx%d covariance matrix on GPU (%d lower-triangle blocks x %d threads)...\n",
+           EMBED_DIM, EMBED_DIM, cov_pairs, BLOCK_SIZE);
     covariance_kernel<<<cov_grid, BLOCK_SIZE>>>(d_vecs, d_mean, d_cov, vocab_size);
+    CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     /* Download covariance to host */
-    float *cov_flat = (float *)malloc(EMBED_DIM * EMBED_DIM * sizeof(float));
-    if (!cov_flat) { printf("ERROR: cov_flat alloc failed\n"); return; }
+    float *cov_flat = NULL;
+    int cov_flat_pinned = 1;
+    host_err = cudaMallocHost((void **)&cov_flat, EMBED_DIM * EMBED_DIM * sizeof(float));
+    if (host_err != cudaSuccess) {
+        cov_flat_pinned = 0;
+        cov_flat = (float *)malloc(EMBED_DIM * EMBED_DIM * sizeof(float));
+        if (!cov_flat) {
+            printf("ERROR: cov_flat alloc failed\n");
+            cudaFree(d_vecs);
+            cudaFree(d_mean);
+            cudaFree(d_cov);
+            return;
+        }
+        printf("  [cov] Pinned covariance download allocation unavailable (%s); using pageable memory.\n",
+               cudaGetErrorString(host_err));
+        cudaGetLastError();
+    }
     CUDA_CHECK(cudaMemcpy(cov_flat, d_cov, EMBED_DIM * EMBED_DIM * sizeof(float),
                            cudaMemcpyDeviceToHost));
 
@@ -471,7 +571,12 @@ void compute_pca_projections_cuda(double total_start) {
     float (*cov)[EMBED_DIM] = (float (*)[EMBED_DIM])cov_flat;
     float (*eigvecs)[EMBED_DIM] = (float (*)[EMBED_DIM])malloc(EMBED_DIM * sizeof(*eigvecs));
     float eigvals[EMBED_DIM];
-    if (!eigvecs) { printf("ERROR: eigvec alloc failed\n"); free(cov_flat); return; }
+    if (!eigvecs) {
+        printf("ERROR: eigvec alloc failed\n");
+        if (cov_flat_pinned) cudaFreeHost(cov_flat);
+        else free(cov_flat);
+        return;
+    }
 
     long long jacobi_ops = 0;
     jacobi_eigen(cov, eigvecs, eigvals, &jacobi_ops);
@@ -513,7 +618,8 @@ void compute_pca_projections_cuda(double total_start) {
     log_stage("build_whitening_W", t4, t5, w_ops);
     printf("  [pca] W_Q / W_K built in %.6fs\n", t5 - t4);
 
-    free(cov_flat);
+    if (cov_flat_pinned) cudaFreeHost(cov_flat);
+    else free(cov_flat);
     free(eigvecs);
 }
 
@@ -767,22 +873,21 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     softmax_kernel<<<sm_grid, BLOCK_SIZE>>>(d_head_scores, NUM_HEADS, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- Per-head diagnostics (download scores, print on CPU) ---- */
-    float *h_head_attn = (float *)malloc(scores_bytes);
-    CUDA_CHECK(cudaMemcpy(h_head_attn, d_head_scores, scores_bytes,
-                           cudaMemcpyDeviceToHost));
+    /* ---- Per-head diagnostics: reduce on GPU, copy only NUM_HEADS floats ---- */
+    float *d_diag_mean = NULL;
+    float h_diag_mean[NUM_HEADS];
+    CUDA_CHECK(cudaMalloc(&d_diag_mean, NUM_HEADS * sizeof(float)));
+    head_diag_mean_kernel<<<NUM_HEADS, BLOCK_SIZE>>>(d_head_scores, d_diag_mean, n_tokens);
+    CUDA_CHECK(cudaPeekAtLastError());
+    CUDA_CHECK(cudaMemcpy(h_diag_mean, d_diag_mean, NUM_HEADS * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    cudaFree(d_diag_mean);
     long long qk_ops = 0;
     for (int h = 0; h < NUM_HEADS; h++) {
-        float mean_max = 0.0f;
-        for (int i = 0; i < n_tokens; i++)
-            mean_max += h_head_attn[(long long)h * MAX_TOKENS * MAX_TOKENS
-                                    + i * MAX_TOKENS + i];
-        mean_max /= n_tokens;
         printf("  [attn] head %d/%d  avg self-attention weight = %.4f\n",
-               h + 1, NUM_HEADS, mean_max);
+               h + 1, NUM_HEADS, h_diag_mean[h]);
     }
     qk_ops = (long long)NUM_HEADS * n_tokens * n_tokens * HEAD_DIM;
-    free(h_head_attn);
 
     /* ---- K6: Attention output ---- */
     dim3 out_grid((HEAD_DIM + 31) / 32, n_tokens, NUM_HEADS);
@@ -987,9 +1092,11 @@ void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
     int sample = (n_tokens < 8) ? n_tokens : 8;
     printf("\nCOMPARE_ATTENTION_SAMPLE_%dx%d\n", sample, sample);
-    for (int i = 0; i < sample; i++) {
-        for (int j = 0; j < sample; j++) {
-            printf("%s%.9f", (j == 0) ? "" : ",", attn_weights[i][j]);
+    for (int si = 0; si < sample; si++) {
+        int i = (sample <= 1) ? 0 : (int)((long long)si * (n_tokens - 1) / (sample - 1));
+        for (int sj = 0; sj < sample; sj++) {
+            int j = (sample <= 1) ? 0 : (int)((long long)sj * (n_tokens - 1) / (sample - 1));
+            printf("%s%.9f", (sj == 0) ? "" : ",", attn_weights[i][j]);
         }
         printf("\n");
     }

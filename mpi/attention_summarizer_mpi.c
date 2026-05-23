@@ -1051,9 +1051,11 @@ void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
     int sample = (n_tokens < 8) ? n_tokens : 8;
     printf("\nCOMPARE_ATTENTION_SAMPLE_%dx%d\n", sample, sample);
-    for (int i = 0; i < sample; i++) {
-        for (int j = 0; j < sample; j++) {
-            printf("%s%.9f", (j == 0) ? "" : ",", attn_weights[i][j]);
+    for (int si = 0; si < sample; si++) {
+        int i = (sample <= 1) ? 0 : (int)((long long)si * (n_tokens - 1) / (sample - 1));
+        for (int sj = 0; sj < sample; sj++) {
+            int j = (sample <= 1) ? 0 : (int)((long long)sj * (n_tokens - 1) / (sample - 1));
+            printf("%s%.9f", (sj == 0) ? "" : ",", attn_weights[i][j]);
         }
         printf("\n");
     }

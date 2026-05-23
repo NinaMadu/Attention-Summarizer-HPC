@@ -5,8 +5,8 @@ MPIRUN      ?= mpirun
 NVCC        ?= nvcc
 
 CFLAGS      ?= -std=gnu11 -O2
-NVCC_FLAGS  ?= -O2
-NVCC_OMP_FLAGS ?= -O2 -Xcompiler -fopenmp
+NVCC_FLAGS  ?= -O3
+NVCC_OMP_FLAGS ?= -O3 -Xcompiler -fopenmp
 LDFLAGS     ?= -lm
 
 MPI_RANKS   ?= 2
@@ -110,13 +110,13 @@ run-mpi-mode: mpi-mode
 	$(MPIRUN) -np $(MPI_RANKS) ./$(MPI_BIN)
 
 run-mpi_openmp_hybrid: mpi_openmp_hybrid
-	OMP_NUM_THREADS=$(OMP_THREADS) $(MPIRUN) -np $(MPI_RANKS) ./$(HYBRID_BIN)
+	$(MPIRUN) -np $(MPI_RANKS) env OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores ./$(HYBRID_BIN)
 
 run-cuda: cuda_app
 	./$(CUDA_BIN)
 
 run-cuda_openmp_hybrid: cuda_openmp_hybrid
-	OMP_NUM_THREADS=$(OMP_THREADS) ./$(CUDA_HYBRID_BIN)
+	OMP_NUM_THREADS=$(OMP_THREADS) OMP_DYNAMIC=FALSE OMP_PROC_BIND=spread OMP_PLACES=cores ./$(CUDA_HYBRID_BIN)
 
 check-serial-mode: check-serial-300d
 
@@ -133,13 +133,13 @@ check-mpi-mode: mpi-mode
 	printf '%s\n' "$(SAMPLE_TEXT)" | $(MPIRUN) -np $(MPI_RANKS) ./$(MPI_BIN)
 
 check-mpi_openmp_hybrid: mpi_openmp_hybrid
-	printf '%s\n' "$(SAMPLE_TEXT)" | OMP_NUM_THREADS=$(OMP_THREADS) $(MPIRUN) -np $(MPI_RANKS) ./$(HYBRID_BIN)
+	printf '%s\n' "$(SAMPLE_TEXT)" | $(MPIRUN) -np $(MPI_RANKS) env OMP_NUM_THREADS=$(OMP_THREADS) OMP_PROC_BIND=close OMP_PLACES=cores ./$(HYBRID_BIN)
 
 check-cuda: cuda_app
 	printf '%s\n' "$(SAMPLE_TEXT)" | ./$(CUDA_BIN)
 
 check-cuda_openmp_hybrid: cuda_openmp_hybrid
-	printf '%s\n' "$(SAMPLE_TEXT)" | OMP_NUM_THREADS=$(OMP_THREADS) ./$(CUDA_HYBRID_BIN)
+	printf '%s\n' "$(SAMPLE_TEXT)" | OMP_NUM_THREADS=$(OMP_THREADS) OMP_DYNAMIC=FALSE OMP_PROC_BIND=spread OMP_PLACES=cores ./$(CUDA_HYBRID_BIN)
 
 compare: compare-cuda
 

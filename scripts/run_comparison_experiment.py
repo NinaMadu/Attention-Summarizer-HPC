@@ -8,6 +8,7 @@ Run from WSL Ubuntu at the project root, for example:
 
 Outputs:
     docs/final_performance_comparison.csv
+    docs/final_performance_summary.csv
     docs/final_accuracy_comparison.csv
     results/comparison_runs/<experiment_id>/*.log
 """
@@ -28,6 +29,14 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPORT_FAMILIES = {
+    "serial_300d",
+    "openmp_300d",
+    "mpi_300d",
+    "mpi_openmp_hybrid_300d",
+    "cuda_300d",
+    "cuda_openmp_hybrid_300d",
+}
 
 
 @dataclass(frozen=True)
@@ -85,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         "--plan",
         choices=["single", "i9-quick", "i9-full", "custom"],
         default="i9-quick",
-        help="single keeps one config; i9-quick is recommended; i9-full is longer.",
+        help="i9-quick is the balanced report plan; i9-full adds exploratory hybrid setups.",
     )
     parser.add_argument("--mpi-ranks", type=int, default=2, help="Used by --plan single.")
     parser.add_argument("--omp-threads", type=int, default=4, help="Used by --plan single.")
@@ -96,14 +105,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-cuda", action="store_true")
     parser.add_argument("--include-serial-200d", action="store_true")
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Compatibility flag. The runner now continues after failed cases by default.",
+    )
+    parser.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help="Stop immediately after a build or run failure.",
+    )
     parser.add_argument(
         "--list-plan",
         action="store_true",
         help="Print the selected run plan and exit without building or running programs.",
     )
     parser.add_argument("--results-dir", default="results/comparison_runs")
-    parser.add_argument("--nvcc-flags", default="-O2", help="Flags passed to nvcc thorugh makefile" )
+    parser.add_argument(
+        "--nvcc-flags",
+        default="-O3",
+        help="Flags passed to nvcc through Makefile NVCC_FLAGS. Default avoids hard-coded GPU architecture.",
+    )
 
     parser.add_argument("--cpu-model", default="Intel Core i9-14900K")
     parser.add_argument("--cpu-cores", type=int, default=24)
@@ -132,14 +154,21 @@ def plan_values(args: argparse.Namespace) -> Tuple[List[int], List[int], List[Tu
         return [args.omp_threads], [args.mpi_ranks], [(args.mpi_ranks, args.omp_threads)]
 
     if args.plan == "i9-quick":
-        openmp_values = [1, 4, 8, 16, 24, 32]
-        mpi_values = [1, 2, 4, 8, 16]
-        hybrid_values = [(2, 8), (2, 16), (4, 4), (4, 8), (8, 2), (8, 4), (16, 2)]
+        openmp_values = [1, 2, 4, 8, 16, 24, 32]
+        mpi_values = [1, 2, 4, 8, 16, 24, 32]
+        hybrid_values = [
+            (1, 1),
+            (1, 2),
+            (2, 2), (4, 1),
+            (2, 4), (4, 2),
+            (2, 8), (4, 4), (8, 2),
+            (2, 16), (4, 8), (8, 4), (16, 2),
+        ]
     elif args.plan == "i9-full":
         openmp_values = [1, 2, 4, 8, 16, 24, 32]
         mpi_values = [1, 2, 4, 8, 16, 24, 32]
         hybrid_values = [
-            (1, 8), (1, 16), (1, 24), (1, 32),
+            (1, 4), (1, 8), (1, 16), (1, 24), (1, 32),
             (2, 4), (2, 8), (2, 12), (2, 16),
             (4, 2), (4, 4), (4, 6), (4, 8),
             (8, 2), (8, 4),
@@ -179,7 +208,7 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
                 build_target="serial-200d",
                 command=["./serial/summarizer_200d"],
                 glove_file="glove.6B.200d.txt",
-                notes="Optional fair CPU baseline for current CUDA 200D.",
+                notes="Optional legacy 200D baseline.",
             )
         )
 
@@ -230,7 +259,14 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
                 family="mpi_openmp_hybrid_300d",
                 label=f"Hybrid 300D, {ranks} ranks x {threads} threads",
                 build_target="mpi_openmp_hybrid",
-                command=["mpirun", "-np", str(ranks), "./mpi/mpi_openmp_hybrid"],
+                command=[
+                    "mpirun", "-np", str(ranks),
+                    "env",
+                    f"OMP_NUM_THREADS={threads}",
+                    "OMP_PROC_BIND=close",
+                    "OMP_PLACES=cores",
+                    "./mpi/mpi_openmp_hybrid",
+                ],
                 glove_file="glove.6B.300d.txt",
                 mpi_ranks=ranks,
                 omp_threads=threads,
@@ -241,15 +277,15 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
     if not args.skip_cuda:
         cases.append(
             RunCase(
-                run_name="cuda_200d",
-                family="cuda_200d",
-                label="CUDA 200D GPU",
+                run_name="cuda_300d",
+                family="cuda_300d",
+                label="CUDA 300D GPU",
                 build_target="cuda_app",
                 command=["./cuda/summarizer_cuda"],
-                glove_file="glove.6B.200d.txt",
+                glove_file="glove.6B.300d.txt",
                 cuda_enabled="yes",
                 config="gpu=rtx5090",
-                notes="CUDA code currently uses 200D, so it is a different configuration from 300D CPU modes.",
+                notes="Fixed CUDA GPU baseline using the same 300D GloVe configuration as CPU modes.",
             )
         )
         for threads in openmp_values:
@@ -449,6 +485,10 @@ def parse_output(output: str) -> Dict[str, object]:
         data["detected_gpu_sms"] = parse_int(gpu_match.group(4))
         data["detected_gpu_memory_mb"] = parse_int(gpu_match.group(5))
 
+    omp_match = re.search(r"OpenMP (?:max threads|threads/rank)=([0-9]+)", output)
+    if omp_match:
+        data["actual_omp_threads"] = parse_int(omp_match.group(1))
+
     for line in output.splitlines():
         line = line.strip()
         if not line.startswith("COMPARE_"):
@@ -501,19 +541,41 @@ def safe_diff(current: object, baseline: object) -> Optional[float]:
         return None
 
 
+def safe_relative_diff(current: object, baseline: object) -> Optional[float]:
+    diff = safe_diff(current, baseline)
+    if diff is None or baseline is None:
+        return None
+    try:
+        denom = abs(float(baseline))
+    except (TypeError, ValueError):
+        return None
+    return diff / denom if denom > 1e-20 else None
+
+
 def error_stats(current: List[float], baseline: List[float]) -> Dict[str, Optional[float]]:
     if not current or not baseline or len(current) != len(baseline):
-        return {"mse": None, "rmse": None, "mae": None, "max_abs": None}
+        return {
+            "mse": None,
+            "rmse": None,
+            "mae": None,
+            "max_abs": None,
+            "baseline_rms": None,
+            "relative_rmse": None,
+        }
 
     diffs = [float(c) - float(b) for c, b in zip(current, baseline)]
     abs_diffs = [abs(d) for d in diffs]
     mse = sum(d * d for d in diffs) / len(diffs)
     mae = sum(abs_diffs) / len(abs_diffs)
+    baseline_rms = math.sqrt(sum(float(b) * float(b) for b in baseline) / len(baseline))
+    relative_rmse = math.sqrt(mse) / baseline_rms if baseline_rms > 1e-20 else None
     return {
         "mse": mse,
         "rmse": math.sqrt(mse),
         "mae": mae,
         "max_abs": max(abs_diffs),
+        "baseline_rms": baseline_rms,
+        "relative_rmse": relative_rmse,
     }
 
 
@@ -650,6 +712,102 @@ def write_csv(path: Path, fieldnames: List[str], rows: List[Dict[str, object]]) 
             writer.writerow({field: fmt(row.get(field)) for field in fieldnames})
 
 
+def value_as_float(value: object) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def mean_value(values: List[float]) -> Optional[float]:
+    return sum(values) / len(values) if values else None
+
+
+def sample_stddev(values: List[float]) -> Optional[float]:
+    if len(values) < 2:
+        return 0.0 if values else None
+    avg = sum(values) / len(values)
+    variance = sum((value - avg) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(variance)
+
+
+def build_performance_summary(performance_rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    groups: Dict[Tuple[object, object], List[Dict[str, object]]] = {}
+    for row in performance_rows:
+        if row.get("status") != "ok":
+            continue
+        compute_total = value_as_float(row.get("compute_total_s"))
+        workers = row.get("total_workers")
+        family = row.get("family")
+        if family not in REPORT_FAMILIES:
+            continue
+        if compute_total is None or workers in (None, "") or family in (None, ""):
+            continue
+        groups.setdefault((family, workers), []).append(row)
+
+    summary_rows: List[Dict[str, object]] = []
+    for (family, workers), rows in sorted(groups.items(), key=lambda item: (str(item[0][0]), int(item[0][1]))):
+        best = min(rows, key=lambda row: value_as_float(row.get("compute_total_s")) or float("inf"))
+        compute_values = [value_as_float(row.get("compute_total_s")) for row in rows]
+        total_values = [value_as_float(row.get("total_s")) for row in rows]
+        compute_clean = [value for value in compute_values if value is not None]
+        total_clean = [value for value in total_values if value is not None]
+
+        summary_rows.append(
+            {
+                "experiment_id": best.get("experiment_id"),
+                "input_id": best.get("input_id"),
+                "run_id": best.get("run_id"),
+                "family": family,
+                "config": best.get("config"),
+                "status": "ok",
+                "summary_policy": "best_compute_total_s_per_family_worker",
+                "n_runs": len(rows),
+                "cpu_model": best.get("cpu_model"),
+                "cpu_cores": best.get("cpu_cores"),
+                "cpu_threads_available": best.get("cpu_threads_available"),
+                "gpu_model": best.get("gpu_model"),
+                "cuda_version": best.get("cuda_version"),
+                "ram_gb": best.get("ram_gb"),
+                "glove_file": best.get("glove_file"),
+                "embed_dim": best.get("embed_dim"),
+                "tokens": best.get("tokens"),
+                "sentences": best.get("sentences"),
+                "mpi_ranks": best.get("mpi_ranks"),
+                "omp_threads": best.get("omp_threads"),
+                "actual_omp_threads": best.get("actual_omp_threads"),
+                "total_workers": workers,
+                "cuda": best.get("cuda"),
+                "total_s": best.get("total_s"),
+                "mean_total_s": mean_value(total_clean),
+                "stddev_total_s": sample_stddev(total_clean),
+                "load_s": best.get("load_s"),
+                "compute_total_s": best.get("compute_total_s"),
+                "mean_compute_total_s": mean_value(compute_clean),
+                "stddev_compute_total_s": sample_stddev(compute_clean),
+                "covariance_s": best.get("covariance_s"),
+                "jacobi_s": best.get("jacobi_s"),
+                "whitening_s": best.get("whitening_s"),
+                "vectorize_s": best.get("vectorize_s"),
+                "positional_s": best.get("positional_s"),
+                "attention_s": best.get("attention_s"),
+                "scoring_s": best.get("scoring_s"),
+                "cpu_util_percent": best.get("cpu_util_percent"),
+                "peak_memory_mb": best.get("peak_memory_mb"),
+                "speedup_vs_best_serial300": best.get("speedup_vs_best_serial300"),
+                "compute_speedup_vs_best_serial300": best.get("compute_speedup_vs_best_serial300"),
+                "efficiency_percent": best.get("efficiency_percent"),
+                "compute_efficiency_percent": best.get("compute_efficiency_percent"),
+                "log_file": best.get("log_file"),
+                "notes": best.get("notes"),
+            }
+        )
+    return summary_rows
+
+
 def build_targets(cases: List[RunCase], args: argparse.Namespace) -> Dict[str, str]:
     statuses: Dict[str, str] = {}
     if args.no_build:
@@ -670,7 +828,7 @@ def build_targets(cases: List[RunCase], args: argparse.Namespace) -> Dict[str, s
         (log_path / f"{target}.log").write_text(build.stdout, encoding="utf-8", errors="replace")
         statuses[target] = "ok" if build.returncode == 0 else "build_failed"
         print(statuses[target])
-        if build.returncode != 0 and not args.continue_on_error:
+        if build.returncode != 0 and args.stop_on_error:
             print(build.stdout)
             raise SystemExit(f"Build failed for target {target}")
     return statuses
@@ -750,7 +908,7 @@ def main() -> int:
         )
         parsed_runs.append(parsed)
 
-        if status != "ok" and not args.continue_on_error:
+        if status != "ok" and args.stop_on_error:
             print(f"Stopping after failed run: {run_id}")
             break
         print()
@@ -768,7 +926,9 @@ def main() -> int:
     baseline_compute_total = subtract_optional(baseline_total, baseline_load)
     baseline_selected = (baseline.get("rank1_sentence_id"), baseline.get("rank2_sentence_id"))
     baseline_attention_checksum = baseline.get("attention_checksum")
+    baseline_attention_abs_checksum = baseline.get("attention_abs_checksum")
     baseline_output_checksum = baseline.get("output_checksum")
+    baseline_output_abs_checksum = baseline.get("output_abs_checksum")
     baseline_embed_dim = baseline.get("embed_dim")
     baseline_num_heads = baseline.get("num_heads")
     baseline_head_dim = baseline.get("head_dim")
@@ -830,6 +990,7 @@ def main() -> int:
                 "sentences": result.get("sentences"),
                 "mpi_ranks": case.mpi_ranks,
                 "omp_threads": case.omp_threads,
+                "actual_omp_threads": result.get("actual_omp_threads"),
                 "total_workers": case.total_workers,
                 "cuda": case.cuda_enabled,
                 "total_s": current_total,
@@ -862,7 +1023,13 @@ def main() -> int:
             and result.get("head_dim") == baseline_head_dim
         )
         attention_diff = safe_diff(result.get("attention_checksum"), baseline_attention_checksum)
+        attention_relative_error = safe_relative_diff(result.get("attention_checksum"), baseline_attention_checksum)
+        attention_abs_diff = safe_diff(result.get("attention_abs_checksum"), baseline_attention_abs_checksum)
+        attention_abs_relative_error = safe_relative_diff(result.get("attention_abs_checksum"), baseline_attention_abs_checksum)
         output_diff = safe_diff(result.get("output_checksum"), baseline_output_checksum)
+        output_relative_error = safe_relative_diff(result.get("output_checksum"), baseline_output_checksum)
+        output_abs_diff = safe_diff(result.get("output_abs_checksum"), baseline_output_abs_checksum)
+        output_abs_relative_error = safe_relative_diff(result.get("output_abs_checksum"), baseline_output_abs_checksum)
 
         row_min = result.get("attention_row_sum_min")
         row_max = result.get("attention_row_sum_max")
@@ -884,7 +1051,9 @@ def main() -> int:
         numeric_exactish = bool(numeric_rmse_values) and all(v <= 1e-6 for v in numeric_rmse_values)
         numeric_close = bool(numeric_rmse_values) and all(v <= 1e-4 for v in numeric_rmse_values)
 
-        if case.family == "serial_300d":
+        if result.get("status") != "ok":
+            accuracy_status = "run_failed"
+        elif case.family == "serial_300d":
             accuracy_status = "baseline"
         elif not config_match:
             accuracy_status = "different_config"
@@ -924,22 +1093,34 @@ def main() -> int:
                 "compared_attention_sample_values": attention_sample_n,
                 "attention_checksum": result.get("attention_checksum"),
                 "attention_checksum_diff": attention_diff,
+                "attention_checksum_relative_error": attention_relative_error,
+                "attention_abs_checksum": result.get("attention_abs_checksum"),
+                "attention_abs_checksum_diff": attention_abs_diff,
+                "attention_abs_checksum_relative_error": attention_abs_relative_error,
                 "output_checksum": result.get("output_checksum"),
                 "output_checksum_diff": output_diff,
+                "output_checksum_relative_error": output_relative_error,
+                "output_abs_checksum": result.get("output_abs_checksum"),
+                "output_abs_checksum_diff": output_abs_diff,
+                "output_abs_checksum_relative_error": output_abs_relative_error,
                 "sentence_score_mse": sentence_stats.get("mse"),
                 "sentence_score_rmse": sentence_stats.get("rmse"),
+                "sentence_score_relative_rmse": sentence_stats.get("relative_rmse"),
                 "sentence_score_mae": sentence_stats.get("mae"),
                 "sentence_score_max_abs_error": sentence_stats.get("max_abs"),
                 "token_centrality_mse": token_centrality_stats.get("mse"),
                 "token_centrality_rmse": token_centrality_stats.get("rmse"),
+                "token_centrality_relative_rmse": token_centrality_stats.get("relative_rmse"),
                 "token_centrality_mae": token_centrality_stats.get("mae"),
                 "token_centrality_max_abs_error": token_centrality_stats.get("max_abs"),
                 "output_l2_mse": output_l2_stats.get("mse"),
                 "output_l2_rmse": output_l2_stats.get("rmse"),
+                "output_l2_relative_rmse": output_l2_stats.get("relative_rmse"),
                 "output_l2_mae": output_l2_stats.get("mae"),
                 "output_l2_max_abs_error": output_l2_stats.get("max_abs"),
                 "attention_sample_mse": attention_sample_stats.get("mse"),
                 "attention_sample_rmse": attention_sample_stats.get("rmse"),
+                "attention_sample_relative_rmse": attention_sample_stats.get("relative_rmse"),
                 "attention_sample_mae": attention_sample_stats.get("mae"),
                 "attention_sample_max_abs_error": attention_sample_stats.get("max_abs"),
                 "attention_row_sum_min": row_min,
@@ -955,7 +1136,7 @@ def main() -> int:
         "experiment_id", "input_id", "run_id", "family", "config", "repeat", "status",
         "cpu_model", "cpu_cores", "cpu_threads_available", "gpu_model", "cuda_version", "ram_gb",
         "glove_file", "embed_dim", "tokens", "sentences",
-        "mpi_ranks", "omp_threads", "total_workers", "cuda",
+        "mpi_ranks", "omp_threads", "actual_omp_threads", "total_workers", "cuda",
         "total_s", "load_s", "compute_total_s",
         "covariance_s", "jacobi_s", "whitening_s",
         "vectorize_s", "positional_s", "attention_s", "scoring_s",
@@ -972,22 +1153,44 @@ def main() -> int:
         "sentence_counts_same_as_serial300", "token_sequence_same_as_serial300",
         "compared_sentences", "compared_tokens", "compared_attention_sample_values",
         "attention_checksum", "attention_checksum_diff",
-        "output_checksum", "output_checksum_diff",
-        "sentence_score_mse", "sentence_score_rmse", "sentence_score_mae", "sentence_score_max_abs_error",
-        "token_centrality_mse", "token_centrality_rmse", "token_centrality_mae", "token_centrality_max_abs_error",
-        "output_l2_mse", "output_l2_rmse", "output_l2_mae", "output_l2_max_abs_error",
-        "attention_sample_mse", "attention_sample_rmse", "attention_sample_mae", "attention_sample_max_abs_error",
+        "attention_checksum_relative_error",
+        "attention_abs_checksum", "attention_abs_checksum_diff", "attention_abs_checksum_relative_error",
+        "output_checksum", "output_checksum_diff", "output_checksum_relative_error",
+        "output_abs_checksum", "output_abs_checksum_diff", "output_abs_checksum_relative_error",
+        "sentence_score_mse", "sentence_score_rmse", "sentence_score_relative_rmse", "sentence_score_mae", "sentence_score_max_abs_error",
+        "token_centrality_mse", "token_centrality_rmse", "token_centrality_relative_rmse", "token_centrality_mae", "token_centrality_max_abs_error",
+        "output_l2_mse", "output_l2_rmse", "output_l2_relative_rmse", "output_l2_mae", "output_l2_max_abs_error",
+        "attention_sample_mse", "attention_sample_rmse", "attention_sample_relative_rmse", "attention_sample_mae", "attention_sample_max_abs_error",
         "attention_row_sum_min", "attention_row_sum_max", "attention_rows_valid",
         "accuracy_status", "log_file", "notes",
     ]
 
+    summary_fields = [
+        "experiment_id", "input_id", "run_id", "family", "config", "status",
+        "summary_policy", "n_runs",
+        "cpu_model", "cpu_cores", "cpu_threads_available", "gpu_model", "cuda_version", "ram_gb",
+        "glove_file", "embed_dim", "tokens", "sentences",
+        "mpi_ranks", "omp_threads", "actual_omp_threads", "total_workers", "cuda",
+        "total_s", "mean_total_s", "stddev_total_s",
+        "load_s", "compute_total_s", "mean_compute_total_s", "stddev_compute_total_s",
+        "covariance_s", "jacobi_s", "whitening_s",
+        "vectorize_s", "positional_s", "attention_s", "scoring_s",
+        "cpu_util_percent", "peak_memory_mb",
+        "speedup_vs_best_serial300", "compute_speedup_vs_best_serial300",
+        "efficiency_percent", "compute_efficiency_percent", "log_file", "notes",
+    ]
+
     perf_path = PROJECT_ROOT / "docs/final_performance_comparison.csv"
+    summary_path = PROJECT_ROOT / "docs/final_performance_summary.csv"
     acc_path = PROJECT_ROOT / "docs/final_accuracy_comparison.csv"
+    summary_rows = build_performance_summary(performance_rows)
     write_csv(perf_path, perf_fields, performance_rows)
+    write_csv(summary_path, summary_fields, summary_rows)
     write_csv(acc_path, accuracy_fields, accuracy_rows)
 
     print("Created:")
     print(f"  {perf_path.relative_to(PROJECT_ROOT)}")
+    print(f"  {summary_path.relative_to(PROJECT_ROOT)}")
     print(f"  {acc_path.relative_to(PROJECT_ROOT)}")
     print("Raw logs:")
     print(f"  {results_dir.relative_to(PROJECT_ROOT)}")
