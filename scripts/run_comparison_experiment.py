@@ -102,11 +102,7 @@ def parse_args() -> argparse.Namespace:
         help="Print the selected run plan and exit without building or running programs.",
     )
     parser.add_argument("--results-dir", default="results/comparison_runs")
-    parser.add_argument(
-        "--nvcc-flags",
-        default="-O2",
-        help="Flags passed to nvcc through Makefile NVCC_FLAGS. Default avoids hard-coded GPU architecture.",
-    )
+    parser.add_argument("--nvcc-flags", default="-O2", help="Flags passed to nvcc thorugh makefile" )
 
     parser.add_argument("--cpu-model", default="Intel Core i9-14900K")
     parser.add_argument("--cpu-cores", type=int, default=24)
@@ -182,7 +178,7 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
                 build_target="serial-200d",
                 command=["./serial/summarizer_200d"],
                 glove_file="glove.6B.200d.txt",
-                notes="Optional legacy 200D baseline.",
+                notes="Optional fair CPU baseline for current CUDA 200D.",
             )
         )
 
@@ -244,15 +240,15 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
     if not args.skip_cuda:
         cases.append(
             RunCase(
-                run_name="cuda_300d",
-                family="cuda_300d",
-                label="CUDA 300D GPU",
+                run_name="cuda_200d",
+                family="cuda_200d",
+                label="CUDA 200D GPU",
                 build_target="cuda_app",
                 command=["./cuda/summarizer_cuda"],
-                glove_file="glove.6B.300d.txt",
+                glove_file="glove.6B.200d.txt",
                 cuda_enabled="yes",
                 config="gpu=rtx5090",
-                notes="CUDA implementation using the same 300D GloVe configuration as the CPU modes.",
+                notes="CUDA code currently uses 200D, so it is a different configuration from 300D CPU modes.",
             )
         )
 
