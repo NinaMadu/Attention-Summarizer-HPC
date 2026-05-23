@@ -1,0 +1,1 @@
+experiment_id,input_id,run_id,family,config,repeat,status,glove_file,embed_dim,tokens,sentences,selected_sentences,rank1_score,rank2_score,same_selected_as_serial300,config_same_as_serial300,attention_checksum,attention_checksum_diff,output_checksum,output_checksum_diff,attention_row_sum_min,attention_row_sum_max,attention_rows_valid,accuracy_status,log_file,notes
