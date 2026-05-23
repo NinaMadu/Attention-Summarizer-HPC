@@ -141,6 +141,7 @@ serial_300d
 openmp
 mpi
 hybrid
+cuda_openmp_hybrid
 ```
 
 For CUDA, a fair result should usually show:
@@ -151,6 +152,8 @@ accuracy_status = match
 ```
 
 Small numerical differences are still possible because GPU floating-point operations may happen in a different order.
+
+The CUDA + OpenMP hybrid version keeps the heavy covariance and attention kernels on the GPU, then uses OpenMP threads for CPU-side preparation and scoring work such as vector lookup, positional encoding, whitening matrix construction, and sentence scoring.
 
 To include the old 200D serial baseline as an extra legacy comparison, run:
 

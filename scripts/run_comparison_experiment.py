@@ -46,7 +46,7 @@ class RunCase:
     @property
     def total_workers(self) -> int:
         if self.cuda_enabled == "yes":
-            return 1
+            return max(1, self.omp_threads)
         return max(1, self.mpi_ranks * self.omp_threads)
 
 
@@ -255,6 +255,21 @@ def make_base_cases(args: argparse.Namespace) -> List[RunCase]:
                 notes="CUDA implementation using the same 300D GloVe configuration as the CPU modes.",
             )
         )
+        for threads in openmp_values:
+            cases.append(
+                RunCase(
+                    run_name=f"cuda_openmp_hybrid_300d_t{threads}",
+                    family="cuda_openmp_hybrid_300d",
+                    label=f"CUDA + OpenMP Hybrid 300D, {threads} CPU threads",
+                    build_target="cuda_openmp_hybrid",
+                    command=["./cuda/summarizer_cuda_openmp_hybrid"],
+                    glove_file="glove.6B.300d.txt",
+                    omp_threads=threads,
+                    cuda_enabled="yes",
+                    config=f"gpu=rtx5090;threads={threads}",
+                    notes="CUDA kernels for covariance and attention, OpenMP for CPU-side preprocessing and scoring.",
+                )
+            )
 
     return cases
 
@@ -436,6 +451,8 @@ def build_targets(cases: List[RunCase], args: argparse.Namespace) -> Dict[str, s
         env_extra = {}
         if target == "cuda_app":
             env_extra["NVCC_FLAGS"] = args.nvcc_flags
+        elif target == "cuda_openmp_hybrid":
+            env_extra["NVCC_OMP_FLAGS"] = f"{args.nvcc_flags} -Xcompiler -fopenmp"
         print(f"=== build {target} ===")
         build = run_command(["make", target], env_extra=env_extra)
         log_path = PROJECT_ROOT / "results" / "build_logs"

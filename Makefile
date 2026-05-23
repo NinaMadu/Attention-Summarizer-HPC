@@ -6,6 +6,7 @@ NVCC        ?= nvcc
 
 CFLAGS      ?= -std=gnu11 -O2
 NVCC_FLAGS  ?= -O2
+NVCC_OMP_FLAGS ?= -O2 -Xcompiler -fopenmp
 LDFLAGS     ?= -lm
 
 MPI_RANKS   ?= 2
@@ -19,6 +20,7 @@ OPENMP_SRC      = openmp/attention_summarizer_omp.c
 MPI_SRC         = mpi/attention_summarizer_mpi.c
 HYBRID_SRC      = mpi/attention_summarizer_hybrid.c
 CUDA_SRC        = cuda/attention_summarizer_cuda.cu
+CUDA_HYBRID_SRC = cuda/attention_summarizer_cuda_openmp_hybrid.cu
 
 # Output binaries
 SERIAL_200D_BIN = serial/summarizer_200d
@@ -27,12 +29,14 @@ OPENMP_BIN      = openmp/summarizer_openmp_mode
 MPI_BIN         = mpi/summarizer_mpi_mode
 HYBRID_BIN      = mpi/mpi_openmp_hybrid
 CUDA_BIN        = cuda/summarizer_cuda
+CUDA_HYBRID_BIN = cuda/summarizer_cuda_openmp_hybrid
 
 .PHONY: all cpu serial_app cuda_app
 .PHONY: serial-mode serial-200d serial-300d openmp-mode mpi-mode mpi_openmp_hybrid
-.PHONY: serial openmp mpi hybrid cuda
-.PHONY: run-serial-mode run-serial-200d run-serial-300d run-openmp-mode run-mpi-mode run-mpi_openmp_hybrid run-cuda
-.PHONY: check-serial-mode check-serial-200d check-serial-300d check-openmp-mode check-mpi-mode check-mpi_openmp_hybrid check-cuda
+.PHONY: cuda_openmp_hybrid
+.PHONY: serial openmp mpi hybrid cuda cuda-hybrid
+.PHONY: run-serial-mode run-serial-200d run-serial-300d run-openmp-mode run-mpi-mode run-mpi_openmp_hybrid run-cuda run-cuda_openmp_hybrid
+.PHONY: check-serial-mode check-serial-200d check-serial-300d check-openmp-mode check-mpi-mode check-mpi_openmp_hybrid check-cuda check-cuda_openmp_hybrid
 .PHONY: compare compare-cpu compare-cuda clean
 
 all: cpu
@@ -54,7 +58,11 @@ hybrid: mpi_openmp_hybrid
 
 cuda: cuda_app
 
+cuda-hybrid: cuda_openmp_hybrid
+
 cuda_app: $(CUDA_BIN)
+
+cuda_openmp_hybrid: $(CUDA_HYBRID_BIN)
 
 serial-200d: $(SERIAL_200D_BIN)
 
@@ -84,6 +92,9 @@ $(HYBRID_BIN): $(HYBRID_SRC)
 $(CUDA_BIN): $(CUDA_SRC)
 	$(NVCC) $(NVCC_FLAGS) $< -o $@ $(LDFLAGS)
 
+$(CUDA_HYBRID_BIN): $(CUDA_HYBRID_SRC)
+	$(NVCC) $(NVCC_OMP_FLAGS) $< -o $@ $(LDFLAGS)
+
 run-serial-mode: run-serial-300d
 
 run-serial-200d: serial-200d
@@ -103,6 +114,9 @@ run-mpi_openmp_hybrid: mpi_openmp_hybrid
 
 run-cuda: cuda_app
 	./$(CUDA_BIN)
+
+run-cuda_openmp_hybrid: cuda_openmp_hybrid
+	OMP_NUM_THREADS=$(OMP_THREADS) ./$(CUDA_HYBRID_BIN)
 
 check-serial-mode: check-serial-300d
 
@@ -124,14 +138,17 @@ check-mpi_openmp_hybrid: mpi_openmp_hybrid
 check-cuda: cuda_app
 	printf '%s\n' "$(SAMPLE_TEXT)" | ./$(CUDA_BIN)
 
+check-cuda_openmp_hybrid: cuda_openmp_hybrid
+	printf '%s\n' "$(SAMPLE_TEXT)" | OMP_NUM_THREADS=$(OMP_THREADS) ./$(CUDA_HYBRID_BIN)
+
 compare: compare-cuda
 
 compare-cpu: check-serial-300d check-openmp-mode check-mpi-mode check-mpi_openmp_hybrid
 
-compare-cuda: check-serial-300d check-cuda
+compare-cuda: check-serial-300d check-cuda check-cuda_openmp_hybrid
 
 clean:
-	$(RM) $(SERIAL_200D_BIN) $(SERIAL_300D_BIN) $(OPENMP_BIN) $(MPI_BIN) $(HYBRID_BIN) $(CUDA_BIN)
+	$(RM) $(SERIAL_200D_BIN) $(SERIAL_300D_BIN) $(OPENMP_BIN) $(MPI_BIN) $(HYBRID_BIN) $(CUDA_BIN) $(CUDA_HYBRID_BIN)
 	$(RM) serial/summarizer serial/summarizer_new serial/summarizer_serial_mode
 	$(RM) openmp/summarizer_new_omp openmp/summarizer_openmp
 	$(RM) mpi/summarizer_mpi mpi/summarizer_mpi_new
