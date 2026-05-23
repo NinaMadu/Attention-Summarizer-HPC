@@ -35,6 +35,7 @@ Important columns:
 mode
 total_s
 load_s
+compute_total_s
 covariance_s
 jacobi_s
 whitening_s
@@ -44,8 +45,10 @@ attention_s
 scoring_s
 cpu_util_percent
 peak_memory_mb
-speedup_vs_serial300
+speedup_vs_best_serial300
+compute_speedup_vs_best_serial300
 efficiency_percent
+compute_efficiency_percent
 ```
 
 Use this table to answer:
@@ -56,6 +59,16 @@ Which stage takes the most time?
 How much speedup did OpenMP, MPI, and hybrid achieve?
 How much memory was used?
 ```
+
+For the main HPC performance comparison, use:
+
+```text
+compute_total_s = total_s - load_s
+compute_speedup_vs_best_serial300
+compute_efficiency_percent
+```
+
+`load_s` is kept separately because GloVe loading is mostly a fixed file I/O startup cost. `compute_total_s` is better for comparing the actual computation after the embeddings are loaded.
 
 ## Accuracy CSV
 
@@ -80,10 +93,16 @@ mode
 selected_sentences
 same_selected_as_serial300
 config_same_as_serial300
+sentence_counts_same_as_serial300
+token_sequence_same_as_serial300
 attention_checksum
 attention_checksum_diff
 output_checksum
 output_checksum_diff
+sentence_score_rmse
+token_centrality_rmse
+output_l2_rmse
+attention_sample_rmse
 attention_rows_valid
 accuracy_status
 ```
@@ -99,9 +118,20 @@ For OpenMP, MPI, and hybrid, the expected result is usually:
 ```text
 same selected sentences
 same configuration
-very small checksum differences
+very small RMSE / MAE / max-error values
 attention rows valid
 ```
+
+The easiest accuracy columns to explain in the report are:
+
+```text
+sentence_score_rmse
+token_centrality_rmse
+output_l2_rmse
+attention_sample_rmse
+```
+
+These are calculated against the `serial_300d` baseline using the `COMPARE_SENTENCE_TABLE`, `COMPARE_TOKEN_TABLE`, and `COMPARE_ATTENTION_SAMPLE` values printed by each program. Lower is better. A value close to zero means the implementation produced almost the same numerical output as serial.
 
 ## Accuracy Status Meaning
 
@@ -111,18 +141,22 @@ The script fills `accuracy_status` as:
 baseline
 match
 same_summary_numeric_diff
+numeric_close_match
 different_output
 different_config
+different_tokenization
 ```
 
 Meaning:
 
 ```text
 baseline                  serial_300d reference row
-match                     same selected sentences and very close checksums
+match                     same selected sentences and near-zero RMSE values
+numeric_close_match       same selected sentences and acceptably small RMSE values
 same_summary_numeric_diff same selected sentences, but small numeric differences
 different_output          selected sentences differ
 different_config          configuration differs, for example a legacy 200D run vs serial 300D
+different_tokenization    token or sentence alignment differs, so MSE is not directly comparable
 ```
 
 ## CUDA Note

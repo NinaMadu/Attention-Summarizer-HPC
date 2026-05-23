@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import re
 import subprocess
@@ -322,6 +323,86 @@ def parse_int(text: str) -> Optional[int]:
         return None
 
 
+def parse_compare_tables(output: str) -> Dict[str, object]:
+    data: Dict[str, object] = {}
+    lines = output.splitlines()
+    i = 0
+    sentence_rows: Dict[int, Dict[str, object]] = {}
+    token_rows: List[Dict[str, object]] = []
+    attention_sample: List[List[float]] = []
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        if line == "COMPARE_SENTENCE_TABLE":
+            i += 2  # skip header
+            while i < len(lines):
+                row = lines[i].strip()
+                if not row or row.startswith("COMPARE_") or row.startswith("="):
+                    break
+                parts = row.split(",")
+                if len(parts) >= 3:
+                    sentence_id = parse_int(parts[0])
+                    token_count = parse_int(parts[1])
+                    score = parse_float(parts[2])
+                    if sentence_id is not None:
+                        sentence_rows[sentence_id] = {
+                            "token_count": token_count,
+                            "score": score,
+                        }
+                i += 1
+            continue
+
+        if line == "COMPARE_TOKEN_TABLE":
+            i += 2  # skip header
+            while i < len(lines):
+                row = lines[i].strip()
+                if not row or row.startswith("COMPARE_") or row.startswith("="):
+                    break
+                parts = row.split(",")
+                if len(parts) >= 5:
+                    token_id = parse_int(parts[0])
+                    sentence_id = parse_int(parts[1])
+                    token = parts[2]
+                    centrality = parse_float(parts[3])
+                    output_l2 = parse_float(parts[4])
+                    if token_id is not None:
+                        token_rows.append(
+                            {
+                                "token_id": token_id,
+                                "sentence_id": sentence_id,
+                                "token": token,
+                                "attention_centrality": centrality,
+                                "output_l2_norm": output_l2,
+                            }
+                        )
+                i += 1
+            continue
+
+        sample_match = re.match(r"COMPARE_ATTENTION_SAMPLE_([0-9]+)x([0-9]+)", line)
+        if sample_match:
+            rows = int(sample_match.group(1))
+            i += 1
+            for _ in range(rows):
+                if i >= len(lines):
+                    break
+                row = lines[i].strip()
+                if not row or row.startswith("COMPARE_") or row.startswith("="):
+                    break
+                values = [parse_float(part) for part in row.split(",")]
+                if all(value is not None for value in values):
+                    attention_sample.append([float(value) for value in values if value is not None])
+                i += 1
+            continue
+
+        i += 1
+
+    data["sentence_table"] = sentence_rows
+    data["token_table"] = token_rows
+    data["attention_sample"] = attention_sample
+    return data
+
+
 def parse_output(output: str) -> Dict[str, object]:
     data: Dict[str, object] = {"stages": {}, "stage_ops": {}}
 
@@ -393,6 +474,7 @@ def parse_output(output: str) -> Dict[str, object]:
             for i in range(1, len(parts) - 1, 2):
                 data[f"output_{parts[i].lower()}"] = parse_float(parts[i + 1])
 
+    data.update(parse_compare_tables(output))
     return data
 
 
@@ -415,6 +497,138 @@ def safe_diff(current: object, baseline: object) -> Optional[float]:
         return None
     try:
         return abs(float(current) - float(baseline))
+    except (TypeError, ValueError):
+        return None
+
+
+def error_stats(current: List[float], baseline: List[float]) -> Dict[str, Optional[float]]:
+    if not current or not baseline or len(current) != len(baseline):
+        return {"mse": None, "rmse": None, "mae": None, "max_abs": None}
+
+    diffs = [float(c) - float(b) for c, b in zip(current, baseline)]
+    abs_diffs = [abs(d) for d in diffs]
+    mse = sum(d * d for d in diffs) / len(diffs)
+    mae = sum(abs_diffs) / len(abs_diffs)
+    return {
+        "mse": mse,
+        "rmse": math.sqrt(mse),
+        "mae": mae,
+        "max_abs": max(abs_diffs),
+    }
+
+
+def flatten_attention_sample(value: object) -> List[float]:
+    if not isinstance(value, list):
+        return []
+    flat: List[float] = []
+    for row in value:
+        if isinstance(row, list):
+            for item in row:
+                try:
+                    flat.append(float(item))
+                except (TypeError, ValueError):
+                    pass
+    return flat
+
+
+def compare_sentence_scores(result: Dict[str, object], baseline: Dict[str, object]) -> Tuple[Dict[str, Optional[float]], str, int]:
+    current_table = result.get("sentence_table")
+    baseline_table = baseline.get("sentence_table")
+    if not isinstance(current_table, dict) or not isinstance(baseline_table, dict):
+        return error_stats([], []), "no", 0
+
+    current_ids = set(current_table.keys())
+    baseline_ids = set(baseline_table.keys())
+    common_ids = sorted(current_ids & baseline_ids)
+    counts_match = current_ids == baseline_ids
+    current_scores: List[float] = []
+    baseline_scores: List[float] = []
+
+    for sentence_id in common_ids:
+        current_row = current_table[sentence_id]
+        baseline_row = baseline_table[sentence_id]
+        if not isinstance(current_row, dict) or not isinstance(baseline_row, dict):
+            continue
+        if current_row.get("token_count") != baseline_row.get("token_count"):
+            counts_match = False
+        current_score = current_row.get("score")
+        baseline_score = baseline_row.get("score")
+        if current_score is not None and baseline_score is not None:
+            current_scores.append(float(current_score))
+            baseline_scores.append(float(baseline_score))
+
+    return error_stats(current_scores, baseline_scores), yes_no(counts_match), len(current_scores)
+
+
+def compare_token_table(result: Dict[str, object], baseline: Dict[str, object]) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[float]], str, int]:
+    current_rows = result.get("token_table")
+    baseline_rows = baseline.get("token_table")
+    if not isinstance(current_rows, list) or not isinstance(baseline_rows, list):
+        empty = error_stats([], [])
+        return empty, empty, "no", 0
+
+    current_by_id = {
+        row.get("token_id"): row
+        for row in current_rows
+        if isinstance(row, dict) and row.get("token_id") is not None
+    }
+    baseline_by_id = {
+        row.get("token_id"): row
+        for row in baseline_rows
+        if isinstance(row, dict) and row.get("token_id") is not None
+    }
+    common_ids = sorted(set(current_by_id.keys()) & set(baseline_by_id.keys()))
+    tokens_match = set(current_by_id.keys()) == set(baseline_by_id.keys())
+
+    current_centrality: List[float] = []
+    baseline_centrality: List[float] = []
+    current_output_l2: List[float] = []
+    baseline_output_l2: List[float] = []
+
+    for token_id in common_ids:
+        current_row = current_by_id[token_id]
+        baseline_row = baseline_by_id[token_id]
+        if (
+            current_row.get("token") != baseline_row.get("token")
+            or current_row.get("sentence_id") != baseline_row.get("sentence_id")
+        ):
+            tokens_match = False
+
+        current_attn = current_row.get("attention_centrality")
+        baseline_attn = baseline_row.get("attention_centrality")
+        if current_attn is not None and baseline_attn is not None:
+            current_centrality.append(float(current_attn))
+            baseline_centrality.append(float(baseline_attn))
+
+        current_l2 = current_row.get("output_l2_norm")
+        baseline_l2 = baseline_row.get("output_l2_norm")
+        if current_l2 is not None and baseline_l2 is not None:
+            current_output_l2.append(float(current_l2))
+            baseline_output_l2.append(float(baseline_l2))
+
+    return (
+        error_stats(current_centrality, baseline_centrality),
+        error_stats(current_output_l2, baseline_output_l2),
+        yes_no(tokens_match),
+        len(current_centrality),
+    )
+
+
+def compare_attention_sample(result: Dict[str, object], baseline: Dict[str, object]) -> Tuple[Dict[str, Optional[float]], int]:
+    current_flat = flatten_attention_sample(result.get("attention_sample"))
+    baseline_flat = flatten_attention_sample(baseline.get("attention_sample"))
+    if len(current_flat) != len(baseline_flat):
+        return error_stats([], []), 0
+    return error_stats(current_flat, baseline_flat), len(current_flat)
+
+
+def subtract_optional(total: object, subtract: object) -> Optional[float]:
+    if total is None:
+        return None
+    try:
+        total_f = float(total)
+        subtract_f = float(subtract) if subtract is not None else 0.0
+        return max(0.0, total_f - subtract_f)
     except (TypeError, ValueError):
         return None
 
@@ -542,8 +756,16 @@ def main() -> int:
         print()
 
     serial_runs = [r for r in parsed_runs if r["status"] == "ok" and r["case"].family == "serial_300d"]
-    baseline = min(serial_runs, key=lambda r: float(r.get("total_s") or float("inf"))) if serial_runs else {}
-    baseline_total = baseline.get("total_s")
+    baseline = min(
+        serial_runs,
+        key=lambda r: subtract_optional(
+            r.get("total_s") or r.get("functional_wall_s"),
+            pick_stage(r.get("stages", {}), "load_glove", "load_glove_replicated")
+        ) or float("inf"),
+    ) if serial_runs else {}
+    baseline_total = baseline.get("total_s") or baseline.get("functional_wall_s")
+    baseline_load = pick_stage(baseline.get("stages", {}), "load_glove", "load_glove_replicated")
+    baseline_compute_total = subtract_optional(baseline_total, baseline_load)
     baseline_selected = (baseline.get("rank1_sentence_id"), baseline.get("rank2_sentence_id"))
     baseline_attention_checksum = baseline.get("attention_checksum")
     baseline_output_checksum = baseline.get("output_checksum")
@@ -562,13 +784,24 @@ def main() -> int:
         assert isinstance(stage_ops, dict)
 
         current_total = result.get("total_s") or result.get("functional_wall_s")
+        load_time = pick_stage(stages, "load_glove", "load_glove_replicated")
+        compute_total = subtract_optional(current_total, load_time)
+
         speedup = None
         if baseline_total and current_total:
             speedup = float(baseline_total) / float(current_total)
 
+        compute_speedup = None
+        if baseline_compute_total and compute_total:
+            compute_speedup = float(baseline_compute_total) / float(compute_total)
+
         efficiency = None
         if speedup is not None and case.total_workers > 0 and case.cuda_enabled != "yes":
             efficiency = 100.0 * speedup / case.total_workers
+
+        compute_efficiency = None
+        if compute_speedup is not None and case.total_workers > 0 and case.cuda_enabled != "yes":
+            compute_efficiency = 100.0 * compute_speedup / case.total_workers
 
         peak_memory = (
             result.get("peak_rss_mb")
@@ -600,7 +833,8 @@ def main() -> int:
                 "total_workers": case.total_workers,
                 "cuda": case.cuda_enabled,
                 "total_s": current_total,
-                "load_s": pick_stage(stages, "load_glove", "load_glove_replicated"),
+                "load_s": load_time,
+                "compute_total_s": compute_total,
                 "covariance_s": pick_stage(stages, "covariance_matrix", "covariance_matrix_mpi", "covariance_matrix_hybrid"),
                 "jacobi_s": pick_stage(stages, "jacobi_eigen"),
                 "whitening_s": pick_stage(stages, "build_whitening_W", "build_whitening_W_hybrid"),
@@ -612,7 +846,9 @@ def main() -> int:
                 "peak_memory_mb": peak_memory,
                 "attention_ops": pick_stage_ops(stage_ops, "self_attention", "self_attention_mpi", "self_attention_hybrid"),
                 "speedup_vs_best_serial300": speedup,
+                "compute_speedup_vs_best_serial300": compute_speedup,
                 "efficiency_percent": efficiency,
+                "compute_efficiency_percent": compute_efficiency,
                 "log_file": result.get("log_file"),
                 "notes": case.notes,
             }
@@ -634,15 +870,30 @@ def main() -> int:
         if row_min is not None and row_max is not None:
             row_sum_ok = abs(float(row_min) - 1.0) <= 1e-4 and abs(float(row_max) - 1.0) <= 1e-4
 
-        attention_close = attention_diff is not None and attention_diff <= 1e-4
-        output_close = output_diff is not None and output_diff <= 1e-4
+        sentence_stats, sentence_counts_match, sentence_compare_n = compare_sentence_scores(result, baseline)
+        token_centrality_stats, output_l2_stats, token_sequence_match, token_compare_n = compare_token_table(result, baseline)
+        attention_sample_stats, attention_sample_n = compare_attention_sample(result, baseline)
+
+        rmse_values = [
+            sentence_stats.get("rmse"),
+            token_centrality_stats.get("rmse"),
+            output_l2_stats.get("rmse"),
+            attention_sample_stats.get("rmse"),
+        ]
+        numeric_rmse_values = [float(v) for v in rmse_values if v is not None]
+        numeric_exactish = bool(numeric_rmse_values) and all(v <= 1e-6 for v in numeric_rmse_values)
+        numeric_close = bool(numeric_rmse_values) and all(v <= 1e-4 for v in numeric_rmse_values)
 
         if case.family == "serial_300d":
             accuracy_status = "baseline"
         elif not config_match:
             accuracy_status = "different_config"
-        elif selected_match and attention_close and output_close and row_sum_ok:
+        elif token_sequence_match != "yes" or sentence_counts_match != "yes":
+            accuracy_status = "different_tokenization"
+        elif selected_match and row_sum_ok and numeric_exactish:
             accuracy_status = "match"
+        elif selected_match and row_sum_ok and numeric_close:
+            accuracy_status = "numeric_close_match"
         elif selected_match and row_sum_ok:
             accuracy_status = "same_summary_numeric_diff"
         else:
@@ -666,10 +917,31 @@ def main() -> int:
                 "rank2_score": result.get("rank2_score"),
                 "same_selected_as_serial300": yes_no(selected_match),
                 "config_same_as_serial300": yes_no(config_match),
+                "sentence_counts_same_as_serial300": sentence_counts_match,
+                "token_sequence_same_as_serial300": token_sequence_match,
+                "compared_sentences": sentence_compare_n,
+                "compared_tokens": token_compare_n,
+                "compared_attention_sample_values": attention_sample_n,
                 "attention_checksum": result.get("attention_checksum"),
                 "attention_checksum_diff": attention_diff,
                 "output_checksum": result.get("output_checksum"),
                 "output_checksum_diff": output_diff,
+                "sentence_score_mse": sentence_stats.get("mse"),
+                "sentence_score_rmse": sentence_stats.get("rmse"),
+                "sentence_score_mae": sentence_stats.get("mae"),
+                "sentence_score_max_abs_error": sentence_stats.get("max_abs"),
+                "token_centrality_mse": token_centrality_stats.get("mse"),
+                "token_centrality_rmse": token_centrality_stats.get("rmse"),
+                "token_centrality_mae": token_centrality_stats.get("mae"),
+                "token_centrality_max_abs_error": token_centrality_stats.get("max_abs"),
+                "output_l2_mse": output_l2_stats.get("mse"),
+                "output_l2_rmse": output_l2_stats.get("rmse"),
+                "output_l2_mae": output_l2_stats.get("mae"),
+                "output_l2_max_abs_error": output_l2_stats.get("max_abs"),
+                "attention_sample_mse": attention_sample_stats.get("mse"),
+                "attention_sample_rmse": attention_sample_stats.get("rmse"),
+                "attention_sample_mae": attention_sample_stats.get("mae"),
+                "attention_sample_max_abs_error": attention_sample_stats.get("max_abs"),
                 "attention_row_sum_min": row_min,
                 "attention_row_sum_max": row_max,
                 "attention_rows_valid": yes_no(row_sum_ok),
@@ -684,10 +956,12 @@ def main() -> int:
         "cpu_model", "cpu_cores", "cpu_threads_available", "gpu_model", "cuda_version", "ram_gb",
         "glove_file", "embed_dim", "tokens", "sentences",
         "mpi_ranks", "omp_threads", "total_workers", "cuda",
-        "total_s", "load_s", "covariance_s", "jacobi_s", "whitening_s",
+        "total_s", "load_s", "compute_total_s",
+        "covariance_s", "jacobi_s", "whitening_s",
         "vectorize_s", "positional_s", "attention_s", "scoring_s",
         "cpu_util_percent", "peak_memory_mb", "attention_ops",
-        "speedup_vs_best_serial300", "efficiency_percent", "log_file", "notes",
+        "speedup_vs_best_serial300", "compute_speedup_vs_best_serial300",
+        "efficiency_percent", "compute_efficiency_percent", "log_file", "notes",
     ]
 
     accuracy_fields = [
@@ -695,8 +969,14 @@ def main() -> int:
         "glove_file", "embed_dim", "tokens", "sentences",
         "selected_sentences", "rank1_score", "rank2_score",
         "same_selected_as_serial300", "config_same_as_serial300",
+        "sentence_counts_same_as_serial300", "token_sequence_same_as_serial300",
+        "compared_sentences", "compared_tokens", "compared_attention_sample_values",
         "attention_checksum", "attention_checksum_diff",
         "output_checksum", "output_checksum_diff",
+        "sentence_score_mse", "sentence_score_rmse", "sentence_score_mae", "sentence_score_max_abs_error",
+        "token_centrality_mse", "token_centrality_rmse", "token_centrality_mae", "token_centrality_max_abs_error",
+        "output_l2_mse", "output_l2_rmse", "output_l2_mae", "output_l2_max_abs_error",
+        "attention_sample_mse", "attention_sample_rmse", "attention_sample_mae", "attention_sample_max_abs_error",
         "attention_row_sum_min", "attention_row_sum_max", "attention_rows_valid",
         "accuracy_status", "log_file", "notes",
     ]
