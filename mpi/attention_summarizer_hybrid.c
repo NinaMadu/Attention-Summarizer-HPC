@@ -157,12 +157,8 @@ static void print_report(double total_start) {
     print_resource_report(total);
 }
 
-/* ====================== JACOBI PROGRESS LOGGING ====================== */
-/* Reports convergence every 10 sweeps so you can see the off-diagonal
-   norm decreasing - key to justifying JACOBI_SWEEPS in HPC context. */
-static int jacobi_verbose = 1;
 
-/* ====================== STRUCTS ====================== */
+static int jacobi_verbose = 1;
 
 typedef struct {
     char word[MAX_WORD_LEN];
@@ -193,7 +189,7 @@ static void mpi_range(int n, int *start, int *end) {
     *end = *start + base + ((mpi_rank < rem) ? 1 : 0);
 }
 
-/* ====================== JACOBI EIGENDECOMPOSITION ====================== */
+/*   JACOBI EIGENDECOMPOSITION   */
 void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
                   float V[EMBED_DIM][EMBED_DIM],
                   float d[EMBED_DIM],
@@ -269,7 +265,7 @@ void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
     printf("  [jacobi] Done. Total floating-point ops: %lld\n", *op_count);
 }
 
-/* ====================== PCA PROJECTIONS ====================== */
+/*  PCA PROJECTIONS  */
 void compute_pca_projections(double total_start) {
     (void)total_start;
     if (is_root()) {
@@ -449,7 +445,7 @@ void compute_pca_projections(double total_start) {
     MPI_Bcast(W_K, EMBED_DIM * EMBED_DIM, MPI_FLOAT, 0, MPI_COMM_WORLD);
 }
 
-/* ====================== PROJECT EMBEDDINGS ====================== */
+/*  PROJECT EMBEDDINGS  */
 void project_embeddings(float in[MAX_TOKENS][EMBED_DIM],
                         float W[EMBED_DIM][EMBED_DIM],
                         float out[MAX_TOKENS][EMBED_DIM],
@@ -469,7 +465,7 @@ void project_embeddings(float in[MAX_TOKENS][EMBED_DIM],
     *ops = local_ops;
 }
 
-/* ====================== LOAD GLOVE ====================== */
+/*  LOAD GLOVE  */
 int load_glove(const char *filename) {
     if (is_root()) {
         printf("\n");
@@ -524,7 +520,7 @@ int load_glove(const char *filename) {
     return 1;
 }
 
-/* ====================== TOKENIZE ====================== */
+/*   TOKENIZE    */
 static int is_token_delim(char c) {
     return c == '\0' || strchr(" .,;:!?\n\t\"'()[]{}", c) != NULL;
 }
@@ -596,7 +592,7 @@ int tokenize(char *text,
     return n;
 }
 
-/* ====================== VECTORIZE ====================== */
+/*   VECTORIZE    */
 void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
                float embeddings[MAX_TOKENS][EMBED_DIM]) {
     if (is_root()) {
@@ -666,7 +662,7 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
     }
 }
 
-/* ====================== POSITIONAL ENCODING ====================== */
+/*   POSITIONAL ENCODING     */
 void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_tokens) {
     if (is_root()) {
         printf("\n");
@@ -695,7 +691,7 @@ void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_toke
     }
 }
 
-/* ====================== MULTI-HEAD SELF-ATTENTION ====================== */
+/*   MULTI-HEAD SELF-ATTENTION   */
 void multihead_self_attention(float embeddings[MAX_TOKENS][EMBED_DIM],
                               int n_tokens,
                               float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -946,7 +942,7 @@ void multihead_self_attention_mpi(float embeddings[MAX_TOKENS][EMBED_DIM],
     free(local_output);
 }
 
-/* ====================== TOKEN IMPORTANCE ====================== */
+/*   TOKEN IMPORTANCE    */
 float token_importance(float *output_vec) {
     float norm = 0.0f;
     for (int dd = 0; dd < EMBED_DIM; dd++)
@@ -954,7 +950,7 @@ float token_importance(float *output_vec) {
     return sqrtf(norm);
 }
 
-/* ====================== SUMMARIZE ====================== */
+/*   SUMMARIZE   */
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
                char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
@@ -1031,7 +1027,6 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     strcat(summary, "======================================================\n");
 }
 
-/* ====================== COMPARISON OUTPUT ====================== */
 void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                              int token_sentence[MAX_TOKENS],
                              int n_tokens,
@@ -1122,11 +1117,6 @@ void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     print_separator('=', 70);
 }
 
-/* ====================== TOP-10 IMPORTANT WORDS ====================== */
-/* Ranks tokens by their output-vector L2 norm as an auxiliary diagnostic.
-   Stop-words are filtered so the result shows
-   semantically meaningful words, not "the", "a", "is", etc.
-   Deduplicates so the same word only appears once in the ranking.    */
 
 static const char *STOPWORDS[] = {
     "the","a","an","is","are","was","were","be","been","being",
@@ -1151,7 +1141,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                      int n_tokens,
                      float output[MAX_TOKENS][EMBED_DIM]) {
 #define TOP_N 10
-    /* Build scored list, skip stop-words, deduplicate */
     typedef struct { char word[MAX_WORD_LEN]; float score; } WordScore;
     WordScore *ws = malloc(n_tokens * sizeof(WordScore));
     if (!ws) return;
@@ -1163,7 +1152,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 
         float score = token_importance(output[i]);
 
-        /* Deduplicate: if already present, keep the higher score */
         int dup = 0;
         for (int j = 0; j < ws_count; j++) {
             if (strcmp(ws[j].word, tokens[i]) == 0) {
@@ -1179,7 +1167,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
         }
     }
 
-    /* Partial selection sort for top TOP_N */
     int take = (ws_count < TOP_N) ? ws_count : TOP_N;
     for (int i = 0; i < take; i++) {
         int mx = i;
@@ -1188,7 +1175,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
         WordScore tmp = ws[i]; ws[i] = ws[mx]; ws[mx] = tmp;
     }
 
-    /* Find max score for bar scaling */
     float max_score = (take > 0) ? ws[0].score : 1.0f;
 
     printf("\n");
@@ -1213,7 +1199,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 #undef TOP_N
 }
 
-/* ====================== MAIN ====================== */
 int main() {
     int provided = 0;
     MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
@@ -1311,17 +1296,14 @@ int main() {
 
         printf("\n%s\n", summary);
 
-        /* Top-10 most important words by attention output norm */
         print_top_words(tokens, n_tokens, output);
 
-        /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
         print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
                                 attn_weights, output, &metrics);
 
     }
 
-    /* Print the full timing, complexity, and resource reports. All ranks enter
-       this function so MPI resource reductions are valid; only root prints. */
+    
     print_report(total_start);
 
     free(vocab); free(embeddings); free(attn_weights); free(output);

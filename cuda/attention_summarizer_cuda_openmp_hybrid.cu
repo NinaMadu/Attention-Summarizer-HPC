@@ -1,28 +1,3 @@
-/*=============================================================================
- *  HYBRID NOTE: this separate version adds OpenMP CPU parallelism around the
- *  existing CUDA 300D implementation. The original CUDA file is unchanged.
- *
- *  CUDA handles covariance and attention. OpenMP handles host-side vocabulary
- *  flattening, vector lookup, positional encoding, whitening matrix creation,
- *  and sentence scoring.
- *  Attention Summarizer — CUDA Accelerated Version
- *
- *  GPU-accelerated stages:
- *    - Covariance matrix computation  O(V × D²)
- *    - Multi-head self-attention       O(T × D² + H × T² × d)
- *
- *  CPU/OpenMP/serial stages:
- *    - GloVe loading, Jacobi eigendecomposition, tokenization,
- *      vectorization, positional encoding, sentence scoring
- *
- *  Produces identical COMPARE_* output for numerical verification
- *  against the serial baseline (attention_summarizer_new.c).
- *
- *  Build:  nvcc -O2 -Xcompiler -fopenmp
- *               cuda/attention_summarizer_cuda_openmp_hybrid.cu
- *               -o cuda/summarizer_cuda_openmp_hybrid
- *===========================================================================*/
-
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -42,8 +17,6 @@
 #include <sys/resource.h>
 #endif
 
-/* ====================== CONSTANTS ====================== */
-
 #define MAX_TOKENS     1024
 #define MAX_WORD_LEN   64
 #define MAX_SENTENCES  128
@@ -60,7 +33,6 @@
 #define TRANSPOSE_TILE_DIM 32
 #define TRANSPOSE_BLOCK_ROWS 8
 
-/* ====================== CUDA ERROR CHECKING ====================== */
 
 #define CUDA_CHECK(call) do {                                        \
     cudaError_t err = (call);                                        \
@@ -71,7 +43,6 @@
     }                                                                \
 } while(0)
 
-/* ====================== CROSS-PLATFORM HIGH-RES TIMER ====================== */
 
 #ifdef _WIN32
 static double now_sec() {
@@ -88,7 +59,6 @@ static double now_sec() {
 }
 #endif
 
-/* ====================== LOGGING UTILITIES ====================== */
 
 typedef struct {
     const char *name;
@@ -200,10 +170,8 @@ static void print_report(double total_start) {
     print_resource_report(total);
 }
 
-/* ====================== JACOBI PROGRESS LOGGING ====================== */
 static int jacobi_verbose = 1;
 
-/* ====================== STRUCTS ====================== */
 
 typedef struct {
     char word[MAX_WORD_LEN];
@@ -217,7 +185,6 @@ typedef struct {
     int selected[2];
 } SummaryMetrics;
 
-/* ====================== GLOBALS ====================== */
 
 Embedding *vocab;
 int vocab_size = 0;
@@ -225,14 +192,6 @@ int vocab_size = 0;
 float W_Q[EMBED_DIM][EMBED_DIM];
 float W_K[EMBED_DIM][EMBED_DIM];
 
-/* ===========================================================================
- *                           CUDA KERNELS
- * =========================================================================== */
-
-/*  K1: Parallel mean — one block per embedding dimension.
- *      Each block uses BLOCK_SIZE threads to cooperatively reduce over V
- *      vocabulary vectors using shared-memory parallel reduction.
- *      Grid : EMBED_DIM blocks      Block: BLOCK_SIZE threads              */
 __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
     int d = blockIdx.x;
     if (d >= EMBED_DIM) return;
@@ -255,10 +214,7 @@ __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
     if (tid == 0) mean[d] = sdata[0] / V;
 }
 
-/*  K2: Covariance matrix — one block per (i,j) element of cov[D][D].
- *      Threads cooperatively reduce over V vectors (shared-mem reduction).
- *      Only the lower triangle (j <= i) is computed; the result is mirrored.
- *      Grid : (EMBED_DIM, EMBED_DIM)      Block: BLOCK_SIZE                */
+
 __global__ void covariance_kernel(const float *vecs, const float *mean,
                                    float *cov, int V) {
     int pair_idx = (int)blockIdx.x;
@@ -295,11 +251,6 @@ __global__ void covariance_kernel(const float *vecs, const float *mean,
     }
 }
 
-/*  K3: Project embeddings — matrix multiply   out = in × W
- *      Grid : n_tokens blocks (one block per token)
- *      Block: BLOCK_SIZE threads (threads stride over output dimensions)   */
-/*  Convert uploaded vocab vectors from row-major [V][D] to dimension-major [D][V].
- *  Covariance then reads contiguous values across vocabulary rows. */
 __global__ void transpose_vocab_kernel(const float *row_major, float *dim_major, int V) {
     __shared__ float tile[TRANSPOSE_TILE_DIM][TRANSPOSE_TILE_DIM + 1];
 
@@ -337,9 +288,7 @@ __global__ void project_kernel(const float *in, const float *W, float *out,
     }
 }
 
-/*  K4: Scaled dot-product  QK^T  for all heads
- *      Grid : (ceil(T/BLOCK), T, H)      Block: BLOCK_SIZE
- *      Each thread computes one score element scores[h][i][j]              */
+
 __global__ void qk_dot_kernel(const float *Q, const float *K, float *scores,
                                int n_tokens, float scale) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -354,9 +303,7 @@ __global__ void qk_dot_kernel(const float *Q, const float *K, float *scores,
     scores[(long long)h * MAX_TOKENS * MAX_TOKENS + i * MAX_TOKENS + j] = dot * scale;
 }
 
-/*  K5: Row-wise stable softmax (subtract max before exp)
- *      Each thread processes one row (head h, query i).
- *      Grid : ceil(H*T / BLOCK)      Block: BLOCK_SIZE                    */
+
 __global__ void softmax_kernel(float *scores, int n_heads, int n_tokens) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int h = idx / n_tokens;
@@ -379,9 +326,7 @@ __global__ void softmax_kernel(float *scores, int n_heads, int n_tokens) {
         row[j] /= sum;
 }
 
-/*  K6: Attention-weighted output
- *      out[i][offset+dd] = Σ_j  attn[h][i][j] × V[j][offset+dd]
- *      Grid : (ceil(HEAD_DIM/32), T, H)      Block: 32                    */
+
 __global__ void attn_output_kernel(const float *attn, const float *V_mat,
                                     float *out, int n_tokens) {
     int dd = blockIdx.x * blockDim.x + threadIdx.x;
@@ -397,8 +342,7 @@ __global__ void attn_output_kernel(const float *attn, const float *V_mat,
     out[i * EMBED_DIM + offset + dd] = sum;
 }
 
-/*  K7: Average attention weights across all heads
- *      Grid : (ceil(T/BLOCK), T)      Block: BLOCK_SIZE                   */
+
 __global__ void average_heads_kernel(const float *head_attn, float *avg_attn,
                                       int n_tokens) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -411,8 +355,7 @@ __global__ void average_heads_kernel(const float *head_attn, float *avg_attn,
     avg_attn[i * MAX_TOKENS + j] = sum / NUM_HEADS;
 }
 
-/*  K8: Per-head average diagonal attention for diagnostics.
- *      Keeps the existing printed metric without copying H x T x T scores. */
+
 __global__ void head_diag_mean_kernel(const float *head_attn, float *diag_mean,
                                       int n_tokens) {
     int h = blockIdx.x;
@@ -436,11 +379,7 @@ __global__ void head_diag_mean_kernel(const float *head_attn, float *diag_mean,
     if (tid == 0) diag_mean[h] = sdata[0] / n_tokens;
 }
 
-/* ===========================================================================
- *                     CPU FUNCTIONS  (identical to serial)
- * =========================================================================== */
 
-/* ====================== JACOBI EIGENDECOMPOSITION ====================== */
 void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
                   float V[EMBED_DIM][EMBED_DIM],
                   float d[EMBED_DIM],
@@ -516,9 +455,7 @@ void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
     printf("  [jacobi] Done. Total floating-point ops: %lld\n", *op_count);
 }
 
-/* ====================== PCA PROJECTIONS (GPU covariance) ====================== */
 void compute_pca_projections_cuda(double total_start) {
-    /* ---- Stage: covariance_matrix [GPU] ---- */
     printf("\n");
     print_separator('-', 60);
     printf("  STAGE: covariance_matrix  [CUDA]\n");
@@ -531,7 +468,6 @@ void compute_pca_projections_cuda(double total_start) {
 
     size_t vecs_bytes = (size_t)vocab_size * EMBED_DIM * sizeof(float);
 
-    /* Extract float vectors from AoS vocab[] into row-major pinned upload memory. */
     float *flat_vecs = NULL;
     int flat_vecs_pinned = 1;
     cudaError_t host_err = cudaMallocHost((void **)&flat_vecs, vecs_bytes);
@@ -552,14 +488,12 @@ void compute_pca_projections_cuda(double total_start) {
     for (int v = 0; v < vocab_size; v++)
         memcpy(flat_vecs + (size_t)v * EMBED_DIM, vocab[v].vec, EMBED_DIM * sizeof(float));
 
-    /* Allocate GPU memory */
     float *d_vecs_row, *d_vecs, *d_mean, *d_cov;
     CUDA_CHECK(cudaMalloc(&d_vecs_row, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_vecs, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_mean, EMBED_DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cov, EMBED_DIM * EMBED_DIM * sizeof(float)));
 
-    /* Upload vectors to GPU */
     CUDA_CHECK(cudaMemcpy(d_vecs_row, flat_vecs, vecs_bytes, cudaMemcpyHostToDevice));
     if (flat_vecs_pinned) cudaFreeHost(flat_vecs);
     else free(flat_vecs);
@@ -573,14 +507,12 @@ void compute_pca_projections_cuda(double total_start) {
     CUDA_CHECK(cudaDeviceSynchronize());
     cudaFree(d_vecs_row);
 
-    /* K1: compute mean vector */
     printf("  [cov] Computing mean vector on GPU (%d blocks x %d threads)...\n",
            EMBED_DIM, BLOCK_SIZE);
     compute_mean_kernel<<<EMBED_DIM, BLOCK_SIZE>>>(d_vecs, d_mean, vocab_size);
     CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* K2: compute covariance matrix */
     int cov_pairs = EMBED_DIM * (EMBED_DIM + 1) / 2;
     dim3 cov_grid(cov_pairs);
     printf("  [cov] Computing %dx%d covariance matrix on GPU (%d lower-triangle blocks x %d threads)...\n",
@@ -589,7 +521,6 @@ void compute_pca_projections_cuda(double total_start) {
     CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* Download covariance to host */
     float *cov_flat = NULL;
     int cov_flat_pinned = 1;
     host_err = cudaMallocHost((void **)&cov_flat, EMBED_DIM * EMBED_DIM * sizeof(float));
@@ -610,7 +541,6 @@ void compute_pca_projections_cuda(double total_start) {
     CUDA_CHECK(cudaMemcpy(cov_flat, d_cov, EMBED_DIM * EMBED_DIM * sizeof(float),
                            cudaMemcpyDeviceToHost));
 
-    /* Free large GPU allocations (vocab vectors ~400MB) */
     cudaFree(d_vecs);
     cudaFree(d_mean);
     cudaFree(d_cov);
@@ -620,7 +550,6 @@ void compute_pca_projections_cuda(double total_start) {
     log_stage("covariance_matrix", t0, t1, cov_ops);
     printf("  [cov] Finished in %.4fs  total ops: %lld\n", t1 - t0, cov_ops);
 
-    /* ---- Stage: jacobi_eigen [CPU] ---- */
     printf("\n");
     print_separator('-', 60);
     printf("  STAGE: jacobi_eigen  [CPU]\n");
@@ -646,7 +575,6 @@ void compute_pca_projections_cuda(double total_start) {
     log_stage("jacobi_eigen", t2, t3, jacobi_ops);
     printf("  [jacobi] Finished in %.4fs\n", t3 - t2);
 
-    /* ---- Stage: build_whitening_matrices [CPU] ---- */
     printf("\n");
     print_separator('-', 60);
     printf("  STAGE: build_whitening_matrices  [CPU]\n");
@@ -685,7 +613,7 @@ void compute_pca_projections_cuda(double total_start) {
     free(eigvecs);
 }
 
-/* ====================== LOAD GLOVE ====================== */
+/*  LOAD GLOVE  */
 int load_glove(const char *filename) {
     printf("\n");
     print_separator('-', 60);
@@ -726,7 +654,7 @@ int load_glove(const char *filename) {
     return 1;
 }
 
-/* ====================== TOKENIZE ====================== */
+/*  TOKENIZE  */
 static int is_token_delim(char c) {
     return c == '\0' || strchr(" .,;:!?\n\t\"'()[]{}", c) != NULL;
 }
@@ -798,7 +726,7 @@ int tokenize(char *text,
     return n;
 }
 
-/* ====================== VECTORIZE ====================== */
+/*  VECTORIZE  */
 void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
                float embeddings[MAX_TOKENS][EMBED_DIM]) {
     printf("\n");
@@ -845,7 +773,6 @@ void vectorize(char tokens[MAX_TOKENS][MAX_WORD_LEN], int n_tokens,
     free(found_flags);
 }
 
-/* ====================== POSITIONAL ENCODING ====================== */
 void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_tokens) {
     printf("\n");
     print_separator('-', 60);
@@ -869,7 +796,6 @@ void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_toke
     printf("  [pe] Done in %.6fs  ops: %lld\n", t1 - t0, ops);
 }
 
-/* ====================== MULTI-HEAD SELF-ATTENTION [CUDA] ====================== */
 void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
                                     int n_tokens,
                                     float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -889,7 +815,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
 
     double t0 = now_sec();
 
-    /* ---- GPU memory allocation ---- */
     float *d_embeddings, *d_W_Q, *d_W_K, *d_Q, *d_K;
     float *d_head_scores, *d_output, *d_attn_weights;
 
@@ -907,17 +832,14 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     CUDA_CHECK(cudaMalloc(&d_output,      embed_bytes));
     CUDA_CHECK(cudaMalloc(&d_attn_weights, attn_bytes));
 
-    /* Zero-init GPU arrays */
     CUDA_CHECK(cudaMemset(d_head_scores,  0, scores_bytes));
     CUDA_CHECK(cudaMemset(d_output,       0, embed_bytes));
     CUDA_CHECK(cudaMemset(d_attn_weights, 0, attn_bytes));
 
-    /* ---- Upload host data to GPU ---- */
     CUDA_CHECK(cudaMemcpy(d_embeddings, embeddings, embed_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_W_Q, W_Q, W_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_W_K, W_K, W_bytes, cudaMemcpyHostToDevice));
 
-    /* ---- K3: Project Q ---- */
     printf("  [attn] Projecting Q (GPU)...\n");
     double tp0 = now_sec();
     project_kernel<<<n_tokens, BLOCK_SIZE>>>(d_embeddings, d_W_Q, d_Q, n_tokens);
@@ -926,7 +848,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     long long proj_ops = (long long)n_tokens * EMBED_DIM * EMBED_DIM;
     printf("  [attn] Q projected in %.4fs  (%lld multiply-adds)\n", tp1 - tp0, proj_ops);
 
-    /* ---- K3: Project K ---- */
     printf("  [attn] Projecting K (GPU)...\n");
     project_kernel<<<n_tokens, BLOCK_SIZE>>>(d_embeddings, d_W_K, d_K, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -935,7 +856,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     printf("  [attn] K projected in %.4fs  (%lld multiply-adds)\n", tp2 - tp1, k_ops);
     proj_ops += k_ops;
 
-    /* ---- K4: Scaled dot-product QK^T ---- */
     float scale = 1.0f / sqrtf((float)HEAD_DIM);
     printf("  [attn] Attention scale factor: 1/sqrt(%d) = %.6f\n", HEAD_DIM, scale);
 
@@ -944,13 +864,11 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     qk_dot_kernel<<<qk_grid, qk_block>>>(d_Q, d_K, d_head_scores, n_tokens, scale);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- K5: Softmax ---- */
     int total_rows = NUM_HEADS * n_tokens;
     int sm_grid = (total_rows + BLOCK_SIZE - 1) / BLOCK_SIZE;
     softmax_kernel<<<sm_grid, BLOCK_SIZE>>>(d_head_scores, NUM_HEADS, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- Per-head diagnostics: reduce on GPU, copy only NUM_HEADS floats ---- */
     float *d_diag_mean = NULL;
     float h_diag_mean[NUM_HEADS];
     CUDA_CHECK(cudaMalloc(&d_diag_mean, NUM_HEADS * sizeof(float)));
@@ -966,21 +884,18 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     }
     qk_ops = (long long)NUM_HEADS * n_tokens * n_tokens * HEAD_DIM;
 
-    /* ---- K6: Attention output ---- */
     dim3 out_grid((HEAD_DIM + 31) / 32, n_tokens, NUM_HEADS);
     dim3 out_block(32);
     attn_output_kernel<<<out_grid, out_block>>>(d_head_scores, d_embeddings,
                                                  d_output, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- K7: Average attention across heads ---- */
     dim3 avg_grid((n_tokens + BLOCK_SIZE - 1) / BLOCK_SIZE, n_tokens);
     dim3 avg_block(BLOCK_SIZE);
     average_heads_kernel<<<avg_grid, avg_block>>>(d_head_scores, d_attn_weights,
                                                     n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- Download results ---- */
     memset(output,       0, MAX_TOKENS * EMBED_DIM   * sizeof(float));
     memset(attn_weights, 0, MAX_TOKENS * MAX_TOKENS  * sizeof(float));
     CUDA_CHECK(cudaMemcpy(output,       d_output,       embed_bytes, cudaMemcpyDeviceToHost));
@@ -994,7 +909,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
            proj_ops, qk_ops, out_ops, total_attn_ops);
     printf("  [attn] Attention stage finished in %.4fs\n", t1 - t0);
 
-    /* ---- Free GPU memory ---- */
     cudaFree(d_embeddings);
     cudaFree(d_W_Q);
     cudaFree(d_W_K);
@@ -1005,7 +919,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     cudaFree(d_attn_weights);
 }
 
-/* ====================== TOKEN IMPORTANCE ====================== */
 float token_importance(float *output_vec) {
     float norm = 0.0f;
     #pragma omp simd reduction(+:norm)
@@ -1014,7 +927,6 @@ float token_importance(float *output_vec) {
     return sqrtf(norm);
 }
 
-/* ====================== SUMMARIZE ====================== */
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
                char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],
@@ -1093,7 +1005,6 @@ void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     strcat(summary, "======================================================\n");
 }
 
-/* ====================== COMPARISON OUTPUT ====================== */
 void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                              int token_sentence[MAX_TOKENS],
                              int n_tokens,
@@ -1184,7 +1095,6 @@ void print_comparison_report(char tokens[MAX_TOKENS][MAX_WORD_LEN],
     print_separator('=', 70);
 }
 
-/* ====================== TOP-10 IMPORTANT WORDS ====================== */
 
 static const char *STOPWORDS[] = {
     "the","a","an","is","are","was","were","be","been","being",
@@ -1266,9 +1176,6 @@ void print_top_words(char tokens[MAX_TOKENS][MAX_WORD_LEN],
 #undef TOP_N
 }
 
-/* ===========================================================================
- *                              MAIN
- * =========================================================================== */
 int main() {
     omp_set_dynamic(0);
 
@@ -1284,7 +1191,6 @@ int main() {
     SummaryMetrics metrics;
     char summary[MAX_SUMMARY_CHARS];
 
-    /* ---- GPU info ---- */
     int device_count = 0;
     CUDA_CHECK(cudaGetDeviceCount(&device_count));
     if (device_count == 0) {
@@ -1335,14 +1241,11 @@ int main() {
 
     printf("\n%s\n", summary);
 
-    /* Top-10 most important words by attention output norm */
     print_top_words(tokens, n_tokens, output);
 
-    /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
     print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
                             attn_weights, output, &metrics);
 
-    /* Print the full timing + complexity report */
     print_report(total_start);
 
     free(vocab); free(embeddings); free(attn_weights); free(output);

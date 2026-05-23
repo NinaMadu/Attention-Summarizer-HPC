@@ -491,14 +491,12 @@ void compute_pca_projections_cuda(double total_start) {
     for (int v = 0; v < vocab_size; v++)
         memcpy(flat_vecs + (size_t)v * EMBED_DIM, vocab[v].vec, EMBED_DIM * sizeof(float));
 
-    /* Allocate GPU memory */
     float *d_vecs_row, *d_vecs, *d_mean, *d_cov;
     CUDA_CHECK(cudaMalloc(&d_vecs_row, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_vecs, vecs_bytes));
     CUDA_CHECK(cudaMalloc(&d_mean, EMBED_DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cov, EMBED_DIM * EMBED_DIM * sizeof(float)));
 
-    /* Upload vectors to GPU */
     CUDA_CHECK(cudaMemcpy(d_vecs_row, flat_vecs, vecs_bytes, cudaMemcpyHostToDevice));
     if (flat_vecs_pinned) cudaFreeHost(flat_vecs);
     else free(flat_vecs);
@@ -512,14 +510,12 @@ void compute_pca_projections_cuda(double total_start) {
     CUDA_CHECK(cudaDeviceSynchronize());
     cudaFree(d_vecs_row);
 
-    /* K1: compute mean vector */
     printf("  [cov] Computing mean vector on GPU (%d blocks x %d threads)...\n",
            EMBED_DIM, BLOCK_SIZE);
     compute_mean_kernel<<<EMBED_DIM, BLOCK_SIZE>>>(d_vecs, d_mean, vocab_size);
     CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* K2: compute covariance matrix */
     int cov_pairs = EMBED_DIM * (EMBED_DIM + 1) / 2;
     dim3 cov_grid(cov_pairs);
     printf("  [cov] Computing %dx%d covariance matrix on GPU (%d lower-triangle blocks x %d threads)...\n",
@@ -528,7 +524,6 @@ void compute_pca_projections_cuda(double total_start) {
     CUDA_CHECK(cudaPeekAtLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* Download covariance to host */
     float *cov_flat = NULL;
     int cov_flat_pinned = 1;
     host_err = cudaMallocHost((void **)&cov_flat, EMBED_DIM * EMBED_DIM * sizeof(float));
@@ -812,7 +807,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
 
     double t0 = now_sec();
 
-    /* ---- GPU memory allocation ---- */
     float *d_embeddings, *d_W_Q, *d_W_K, *d_Q, *d_K;
     float *d_head_scores, *d_output, *d_attn_weights;
 
@@ -830,17 +824,14 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     CUDA_CHECK(cudaMalloc(&d_output,      embed_bytes));
     CUDA_CHECK(cudaMalloc(&d_attn_weights, attn_bytes));
 
-    /* Zero-init GPU arrays */
     CUDA_CHECK(cudaMemset(d_head_scores,  0, scores_bytes));
     CUDA_CHECK(cudaMemset(d_output,       0, embed_bytes));
     CUDA_CHECK(cudaMemset(d_attn_weights, 0, attn_bytes));
 
-    /* ---- Upload host data to GPU ---- */
     CUDA_CHECK(cudaMemcpy(d_embeddings, embeddings, embed_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_W_Q, W_Q, W_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_W_K, W_K, W_bytes, cudaMemcpyHostToDevice));
 
-    /* ---- K3: Project Q ---- */
     printf("  [attn] Projecting Q (GPU)...\n");
     double tp0 = now_sec();
     project_kernel<<<n_tokens, BLOCK_SIZE>>>(d_embeddings, d_W_Q, d_Q, n_tokens);
@@ -849,7 +840,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     long long proj_ops = (long long)n_tokens * EMBED_DIM * EMBED_DIM;
     printf("  [attn] Q projected in %.4fs  (%lld multiply-adds)\n", tp1 - tp0, proj_ops);
 
-    /* ---- K3: Project K ---- */
     printf("  [attn] Projecting K (GPU)...\n");
     project_kernel<<<n_tokens, BLOCK_SIZE>>>(d_embeddings, d_W_K, d_K, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -858,7 +848,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     printf("  [attn] K projected in %.4fs  (%lld multiply-adds)\n", tp2 - tp1, k_ops);
     proj_ops += k_ops;
 
-    /* ---- K4: Scaled dot-product QK^T ---- */
     float scale = 1.0f / sqrtf((float)HEAD_DIM);
     printf("  [attn] Attention scale factor: 1/sqrt(%d) = %.6f\n", HEAD_DIM, scale);
 
@@ -867,7 +856,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     qk_dot_kernel<<<qk_grid, qk_block>>>(d_Q, d_K, d_head_scores, n_tokens, scale);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- K5: Softmax ---- */
     int total_rows = NUM_HEADS * n_tokens;
     int sm_grid = (total_rows + BLOCK_SIZE - 1) / BLOCK_SIZE;
     softmax_kernel<<<sm_grid, BLOCK_SIZE>>>(d_head_scores, NUM_HEADS, n_tokens);
@@ -889,21 +877,18 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
     }
     qk_ops = (long long)NUM_HEADS * n_tokens * n_tokens * HEAD_DIM;
 
-    /* ---- K6: Attention output ---- */
     dim3 out_grid((HEAD_DIM + 31) / 32, n_tokens, NUM_HEADS);
     dim3 out_block(32);
     attn_output_kernel<<<out_grid, out_block>>>(d_head_scores, d_embeddings,
                                                  d_output, n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- K7: Average attention across heads ---- */
     dim3 avg_grid((n_tokens + BLOCK_SIZE - 1) / BLOCK_SIZE, n_tokens);
     dim3 avg_block(BLOCK_SIZE);
     average_heads_kernel<<<avg_grid, avg_block>>>(d_head_scores, d_attn_weights,
                                                     n_tokens);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* ---- Download results ---- */
     memset(output,       0, MAX_TOKENS * EMBED_DIM   * sizeof(float));
     memset(attn_weights, 0, MAX_TOKENS * MAX_TOKENS  * sizeof(float));
     CUDA_CHECK(cudaMemcpy(output,       d_output,       embed_bytes, cudaMemcpyDeviceToHost));
@@ -917,7 +902,6 @@ void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
            proj_ops, qk_ops, out_ops, total_attn_ops);
     printf("  [attn] Attention stage finished in %.4fs\n", t1 - t0);
 
-    /* ---- Free GPU memory ---- */
     cudaFree(d_embeddings);
     cudaFree(d_W_Q);
     cudaFree(d_W_K);
@@ -1201,7 +1185,6 @@ int main() {
     SummaryMetrics metrics;
     char summary[MAX_SUMMARY_CHARS];
 
-    /* ---- GPU info ---- */
     int device_count = 0;
     CUDA_CHECK(cudaGetDeviceCount(&device_count));
     if (device_count == 0) {
@@ -1251,14 +1234,11 @@ int main() {
 
     printf("\n%s\n", summary);
 
-    /* Top-10 most important words by attention output norm */
     print_top_words(tokens, n_tokens, output);
 
-    /* Deterministic numeric output for comparing serial/MPI/OpenMP/CUDA runs */
     print_comparison_report(tokens, token_sentence, n_tokens, n_sentences,
                             attn_weights, output, &metrics);
 
-    /* Print the full timing + complexity report */
     print_report(total_start);
 
     free(vocab); free(embeddings); free(attn_weights); free(output);
