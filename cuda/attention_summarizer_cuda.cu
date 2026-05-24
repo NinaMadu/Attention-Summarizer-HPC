@@ -74,7 +74,7 @@
 #define EIG_FLOOR        1e-6f
 
 /* CUDA thread-block size used by most 1-D kernels. */
-#define BLOCK_SIZE       128
+#define BLOCK_SIZE       256
 
 /* Tile width for the shared-memory transpose kernel. */
 #define TRANSPOSE_TILE_DIM   32
