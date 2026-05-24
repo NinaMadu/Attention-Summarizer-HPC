@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid MPI + OpenMP Visualization — Attention Summarizer</title>
+    <meta name="description" content="Interactive visualization of Hybrid MPI/OpenMP parallelization strategies used in the Attention Summarizer HPC project.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0c14;
+            --bg-panel: rgba(18, 22, 36, 0.85);
+            --accent-green: #76e4aa;
+            --accent-cyan: #00e5ff;
+            --accent-purple: #b47dff;
+            --accent-orange: #ffab40;
+            --accent-pink: #ff4d8d;
+            --accent-red: #ff5e5e;
+            --accent-yellow: #ffe066;
+            --accent-blue: #4da6ff;
+            --text-main: #e2e8f0;
+            --text-muted: #7e8aa0;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --glass: rgba(255,255,255,0.03);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            background-image:
+                radial-gradient(ellipse at 10% 80%, rgba(255, 94, 94, 0.06), transparent 40%),
+                radial-gradient(ellipse at 90% 20%, rgba(77, 166, 255, 0.06), transparent 40%),
+                radial-gradient(ellipse at 50% 50%, rgba(180, 125, 255, 0.04), transparent 50%);
+        }
+
+        /* ─── Sidebar ─── */
+        #sidebar {
+            width: 350px;
+            min-width: 350px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            z-index: 10;
+        }
+
+        #sidebar-header {
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 1rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        #sidebar-subtitle {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #steps-list {
+            list-style: none;
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+            margin-top: 16px;
+        }
+        #steps-list::-webkit-scrollbar { width: 4px; }
+        #steps-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+        .step-item {
+            padding: 10px 14px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-item:hover { background: rgba(255,255,255,0.04); }
+        .step-item.active {
+            background: rgba(180, 125, 255, 0.08);
+            border-color: rgba(180, 125, 255, 0.25);
+            color: var(--accent-purple);
+            box-shadow: 0 0 20px rgba(180, 125, 255, 0.08);
+        }
+        .step-item.completed { color: var(--text-main); }
+        .step-item .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+            box-shadow: 0 0 6px currentColor;
+        }
+        .step-item .badge {
+            margin-left: auto;
+            font-size: 0.6rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-mpi { background: rgba(255, 94, 94, 0.15); color: var(--accent-red); }
+        .badge-omp { background: rgba(77, 166, 255, 0.15); color: var(--accent-blue); }
+        .badge-hybrid { background: rgba(180, 125, 255, 0.15); color: var(--accent-purple); }
+
+        /* Controls */
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+        }
+        button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+        button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btn-next {
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-blue));
+            color: #0a0c14;
+            border: none;
+            font-weight: 800;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 20px rgba(180, 125, 255, 0.3);
+            filter: brightness(1.1);
+        }
+
+        /* ─── Main Stage ─── */
+        #main-stage {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 32px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #stage-header {
+            margin-bottom: 24px;
+            transition: opacity 0.3s;
+        }
+        #stage-title {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        #stage-desc {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            max-width: 900px;
+            line-height: 1.65;
+        }
+
+        #visualization-area {
+            flex-grow: 1;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.4);
+            transition: opacity 0.3s;
+        }
+
+        /* ─── Reusable Components ─── */
+        .flex-center { display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%; height: 100%; }
+
+        /* SVG Canvas */
+        .viz-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.92); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes nodeWork {
+            0% { border-color: rgba(255, 94, 94, 0.2); box-shadow: 0 0 0 rgba(255, 94, 94, 0); }
+            50% { border-color: rgba(255, 94, 94, 0.6); box-shadow: 0 0 15px rgba(255, 94, 94, 0.2); }
+            100% { border-color: rgba(255, 94, 94, 0.2); box-shadow: 0 0 0 rgba(255, 94, 94, 0); }
+        }
+        @keyframes threadWork {
+            0% { opacity: 0.2; }
+            50% { opacity: 0.8; }
+            100% { opacity: 0.2; }
+        }
+
+        /* Welcome Hero */
+        .hero-hybrid {
+            display: flex;
+            gap: 30px;
+            animation: fadeInScale 1s ease;
+        }
+        .node {
+            width: 140px; height: 140px;
+            background: linear-gradient(135deg, rgba(255,94,94,0.05), rgba(77,166,255,0.05));
+            border: 2px solid rgba(255,94,94,0.4);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 12px;
+            position: relative;
+            animation: nodeWork 3s infinite ease-in-out;
+        }
+        .core-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px;
+            margin-top: 10px;
+            width: 100%;
+        }
+        .core {
+            height: 35px;
+            background: rgba(77,166,255,0.15);
+            border: 1px solid rgba(77,166,255,0.4);
+            border-radius: 4px;
+            animation: threadWork 1.5s infinite;
+        }
+        .node-network {
+            width: 100%; height: 6px;
+            background: var(--accent-purple);
+            box-shadow: 0 0 15px var(--accent-purple);
+            border-radius: 3px;
+            margin-top: 16px;
+        }
+        .network-link {
+            width: 2px; height: 30px;
+            background: var(--accent-purple);
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>Hybrid MPI + OpenMP</h1>
+            <div id="sidebar-subtitle">Distributed + Shared Memory Pipeline</div>
+        </div>
+        <ul id="steps-list"></ul>
+        <div id="controls">
+            <button id="btn-prev" disabled>◂ Prev</button>
+            <button id="btn-next">Next ▸</button>
+        </div>
+    </div>
+
+    <div id="main-stage">
+        <div id="stage-header">
+            <h2 id="stage-title">Hybrid Architecture Model</h2>
+            <p id="stage-desc">Explore how the Attention Summarizer leverages a 2-level hierarchical parallelism strategy. MPI scales across distributed cluster nodes, while OpenMP maxes out the cores within each node.</p>
+        </div>
+        <div id="visualization-area">
+            <div class="flex-center">
+                <div class="hero-hybrid" id="hero-cluster">
+                    <!-- Nodes added by JS -->
+                </div>
+                <div class="network-link"></div>
+                <div class="node-network" style="width: 450px;"></div>
+                <h3 style="margin-top:24px; font-weight:300; letter-spacing:3px; text-transform:uppercase; font-size:0.9rem; color:var(--text-muted);">
+                    Hybrid Parallelization
+                </h3>
+                <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted);">
+                    Inter-Node MPI Comm · Intra-Node OpenMP Threads · Minimized Network Traffic
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// Initialize hero cluster
+(() => {
+    const cluster = document.getElementById('hero-cluster');
+    for (let i = 0; i < 3; i++) {
+        const node = document.createElement('div');
+        node.className = 'node';
+        node.style.animationDelay = `${i * 0.5}s`;
+        
+        let coresHTML = '';
+        for(let j = 0; j < 4; j++) {
+            coresHTML += `<div class="core" style="animation-delay: ${(i*0.5) + (j*0.2)}s;"></div>`;
+        }
+        
+        node.innerHTML = `
+            <span style="font-family:'JetBrains Mono'; font-size:0.8rem; color:var(--accent-red); font-weight:bold;">MPI Rank ${i}</span>
+            <div class="core-grid">${coresHTML}</div>
+        `;
+        cluster.appendChild(node);
+    }
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   STEP DEFINITIONS
+   ═══════════════════════════════════════════════════════════════════ */
+const steps = [
+    {
+        title: '2-Level Data Splitting',
+        badge: 'hybrid',
+        desc: 'Workload distribution happens in two phases. First, `mpi_range` divides the global data array evenly across all MPI ranks (nodes). Second, `#pragma omp parallel for` divides each rank\'s sub-array dynamically across its local OpenMP threads.',
+        render: renderTwoLevelSplit
+    },
+    {
+        title: 'Covariance: 3-Tier Reduction',
+        badge: 'hybrid',
+        desc: 'To compute the Covariance Matrix, the system reduces data across 3 tiers: 1) Threads build a private `thread_cov`, 2) `omp critical` merges them into the rank\'s `local_cov`, 3) `MPI_Reduce` merges all rank matrices into the root `cov`.',
+        render: renderThreeTierReduction
+    },
+    {
+        title: 'Tokenization & Vectorize',
+        badge: 'hybrid',
+        desc: 'Threads perform vocabulary lookups simultaneously inside each MPI rank using `schedule(dynamic)`. Since tokens are found at varying speeds, threads pull chunks from the rank\'s local queue to maintain perfect load balancing.',
+        render: renderHybridVectorize
+    },
+    {
+        title: 'Positional Encoding',
+        badge: 'omp',
+        desc: 'Because Positional Encoding is computationally lightweight but modifying the entire sequence array, it is replicated completely on all MPI ranks to avoid network overhead. Each rank uses `omp parallel for collapse(2)` to encode the array.',
+        render: renderPositionalEncoding
+    },
+    {
+        title: 'Attention: Hybrid Compute',
+        badge: 'hybrid',
+        desc: 'During the Multi-head Self-Attention stage, OpenMP handles the dense matrix projections locally (`Q += in * W_Q`). Then, `MPI_Allreduce` is invoked to synchronize the completely projected `Q` and `K` matrices across the cluster.',
+        render: renderHybridAttention
+    }
+];
+
+let currentStep = -1;
+const listEl = document.getElementById('steps-list');
+const titleEl = document.getElementById('stage-title');
+const descEl = document.getElementById('stage-desc');
+const visEl = document.getElementById('visualization-area');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+
+steps.forEach((step, idx) => {
+    const li = document.createElement('li');
+    li.className = 'step-item';
+    li.innerHTML = `<span class="dot"></span><span>${step.title}</span><span class="badge badge-${step.badge}">${step.badge}</span>`;
+    li.onclick = () => goToStep(idx);
+    listEl.appendChild(li);
+});
+
+function goToStep(idx) {
+    if (idx < 0 || idx >= steps.length) return;
+    currentStep = idx;
+    visEl.style.opacity = '0';
+    document.getElementById('stage-header').style.opacity = '0';
+    setTimeout(() => {
+        const step = steps[idx];
+        titleEl.innerText = step.title;
+        descEl.innerHTML = step.desc;
+        visEl.innerHTML = '';
+        step.render();
+        visEl.style.opacity = '1';
+        const header = document.getElementById('stage-header');
+        header.style.opacity = '1';
+        header.style.animation = 'none';
+        void header.offsetWidth;
+        header.style.animation = 'fadeInUp 0.5s ease';
+        updateSidebar();
+        updateControls();
+    }, 300);
+}
+
+function updateSidebar() {
+    listEl.querySelectorAll('li').forEach((li, idx) => {
+        li.classList.remove('active', 'completed');
+        if (idx === currentStep) li.classList.add('active');
+        else if (idx < currentStep) li.classList.add('completed');
+    });
+}
+
+function updateControls() {
+    btnPrev.disabled = currentStep < 0;
+    btnNext.disabled = currentStep === steps.length - 1;
+    btnNext.innerText = currentStep === steps.length - 1 ? 'Done' : 'Next ▸';
+}
+
+btnPrev.addEventListener('click', () => goToStep(currentStep - 1));
+btnNext.addEventListener('click', () => {
+    if (currentStep === -1) goToStep(0);
+    else goToStep(currentStep + 1);
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER FUNCTIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function svgWrap(inner, viewBox = '0 0 900 480') {
+    return `<svg class="viz-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+}
+
+function renderTwoLevelSplit() {
+    let svg = '';
+    
+    // Global Array
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Level 1: MPI Split (Inter-Node)</text>`;
+    svg += `<rect x="150" y="50" width="600" height="30" fill="rgba(255,255,255,0.05)" stroke="var(--border-color)" stroke-width="1" />`;
+    
+    // Split into 2 Ranks
+    svg += `<rect x="150" y="50" width="300" height="30" fill="rgba(255,94,94,0.1)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="300" y="70" text-anchor="middle" fill="var(--accent-red)" font-size="12" font-family="JetBrains Mono">Rank 0</text>`;
+    
+    svg += `<rect x="450" y="50" width="300" height="30" fill="rgba(255,94,94,0.1)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="600" y="70" text-anchor="middle" fill="var(--accent-red)" font-size="12" font-family="JetBrains Mono">Rank 1</text>`;
+    
+    // Arrows down to OpenMP layer
+    svg += `<path d="M 300 80 L 300 130" fill="none" stroke="var(--accent-red)" stroke-width="2" marker-end="url(#arrowRed)"/>`;
+    svg += `<path d="M 600 80 L 600 130" fill="none" stroke="var(--accent-red)" stroke-width="2" marker-end="url(#arrowRed)"/>`;
+    
+    svg += `<text x="450" y="160" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Level 2: OpenMP Split (Intra-Node)</text>`;
+    
+    // OpenMP splitting inside Rank 0
+    svg += `<rect x="150" y="180" width="300" height="80" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-dasharray="4 2" stroke-width="1.5" />`;
+    svg += `<text x="160" y="200" fill="var(--accent-red)" font-size="10" font-family="JetBrains Mono">Rank 0 Process</text>`;
+    for(let t=0; t<4; t++) {
+        svg += `<rect x="${160 + t*70}" y="215" width="60" height="30" rx="4" fill="rgba(77,166,255,0.15)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+        svg += `<text x="${190 + t*70}" y="235" text-anchor="middle" fill="var(--accent-blue)" font-size="10" font-family="JetBrains Mono">T${t}</text>`;
+    }
+    
+    // OpenMP splitting inside Rank 1
+    svg += `<rect x="450" y="180" width="300" height="80" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-dasharray="4 2" stroke-width="1.5" />`;
+    svg += `<text x="460" y="200" fill="var(--accent-red)" font-size="10" font-family="JetBrains Mono">Rank 1 Process</text>`;
+    for(let t=0; t<4; t++) {
+        svg += `<rect x="${460 + t*70}" y="215" width="60" height="30" rx="4" fill="rgba(77,166,255,0.15)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+        svg += `<text x="${490 + t*70}" y="235" text-anchor="middle" fill="var(--accent-blue)" font-size="10" font-family="JetBrains Mono">T${t}</text>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-red)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="320" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="JetBrains Mono">mpi_range(N, &start, &end)  ->  #pragma omp parallel for</text>`;
+    svg += `<text x="450" y="350" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Ensures massive scalability. Work is split across N machines over the network,</text>`;
+    svg += `<text x="450" y="370" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">and within each machine, all CPU cores are kept at 100% utilization.</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderThreeTierReduction() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">3-Tier Matrix Reduction Tree</text>`;
+    
+    // Tier 1: Thread Local
+    svg += `<text x="80" y="100" fill="var(--accent-blue)" font-size="12" font-family="JetBrains Mono">Tier 1: Threads</text>`;
+    svg += `<text x="80" y="120" fill="var(--text-muted)" font-size="10" font-family="Inter">Private matrices</text>`;
+    
+    for(let r=0; r<2; r++) { // 2 Ranks
+        for(let t=0; t<3; t++) { // 3 threads per rank visualized
+            svg += `<rect x="${250 + r*250 + t*60}" y="80" width="40" height="40" rx="4" fill="rgba(77,166,255,0.1)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+            svg += `<text x="${270 + r*250 + t*60}" y="105" text-anchor="middle" fill="var(--accent-blue)" font-size="9" font-family="JetBrains Mono">th_cov</text>`;
+            
+            // Flow to tier 2
+            svg += `<path d="M ${270 + r*250 + t*60} 120 C ${270 + r*250 + t*60} 150, ${330 + r*250} 150, ${330 + r*250} 180" fill="none" stroke="var(--accent-blue)" stroke-width="1.5" stroke-dasharray="4 2">
+                <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.5s" repeatCount="indefinite" />
+            </path>`;
+        }
+    }
+    
+    // Tier 2: Rank Local
+    svg += `<text x="80" y="210" fill="var(--accent-red)" font-size="12" font-family="JetBrains Mono">Tier 2: MPI Ranks</text>`;
+    svg += `<text x="80" y="230" fill="var(--text-muted)" font-size="10" font-family="Inter">#pragma omp critical</text>`;
+    
+    for(let r=0; r<2; r++) {
+        svg += `<rect x="${290 + r*250}" y="180" width="80" height="60" rx="6" fill="rgba(255,94,94,0.1)" stroke="var(--accent-red)" stroke-width="2" />`;
+        svg += `<text x="${330 + r*250}" y="210" text-anchor="middle" fill="var(--accent-red)" font-size="11" font-family="JetBrains Mono">local_cov</text>`;
+        svg += `<text x="${330 + r*250}" y="225" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="Inter">Rank ${r}</text>`;
+        
+        // Flow to tier 3
+        svg += `<path d="M ${330 + r*250} 240 C ${330 + r*250} 280, 450 280, 450 310" fill="none" stroke="var(--accent-purple)" stroke-width="2" stroke-dasharray="6 3">
+            <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.8s" repeatCount="indefinite" />
+        </path>`;
+    }
+    
+    // Tier 3: Global
+    svg += `<text x="80" y="340" fill="var(--accent-purple)" font-size="12" font-family="JetBrains Mono">Tier 3: Network</text>`;
+    svg += `<text x="80" y="360" fill="var(--text-muted)" font-size="10" font-family="Inter">MPI_Reduce()</text>`;
+    
+    svg += `<rect x="400" y="310" width="100" height="80" rx="8" fill="rgba(180,125,255,0.15)" stroke="var(--accent-purple)" stroke-width="2.5" />`;
+    svg += `<text x="450" y="350" text-anchor="middle" fill="#fff" font-size="14" font-family="JetBrains Mono" font-weight="bold">Global cov</text>`;
+    svg += `<text x="450" y="370" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="Inter">Rank 0</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 430');
+}
+
+function renderHybridVectorize() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="15" font-family="Inter" font-weight="bold">Hybrid Token Vectorization</text>`;
+    svg += `<text x="450" y="55" text-anchor="middle" fill="var(--accent-cyan)" font-size="12" font-family="JetBrains Mono">#pragma omp parallel for schedule(dynamic, 4)</text>`;
+    
+    // Token list
+    svg += `<rect x="150" y="80" width="600" height="30" fill="rgba(255,255,255,0.05)" stroke="var(--border-color)" stroke-width="1" />`;
+    
+    for(let i=0; i<15; i++) {
+        svg += `<line x1="${150 + i*40}" y1="80" x2="${150 + i*40}" y2="110" stroke="var(--border-color)" stroke-width="1"/>`;
+    }
+    
+    // Rank 0 Boundary
+    svg += `<rect x="145" y="140" width="310" height="150" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-dasharray="4 2" stroke-width="1.5" />`;
+    svg += `<text x="300" y="160" text-anchor="middle" fill="var(--accent-red)" font-size="12" font-family="JetBrains Mono">Rank 0</text>`;
+    
+    // Dynamic chunks being pulled by threads in Rank 0
+    const colors = ['var(--accent-blue)', 'var(--accent-green)'];
+    for(let t=0; t<2; t++) {
+        svg += `<rect x="${160}" y="${180 + t*40}" width="40" height="20" rx="4" fill="${colors[t]}" fill-opacity="0.2" stroke="${colors[t]}" stroke-width="1" />`;
+        svg += `<text x="${180}" y="${194 + t*40}" text-anchor="middle" fill="${colors[t]}" font-size="10" font-family="JetBrains Mono">T${t}</text>`;
+        
+        // Lines to queue
+        svg += `<path d="M 180 180 L 220 110" fill="none" stroke="${colors[t]}" stroke-width="1" stroke-dasharray="2 2" opacity="0.6"/>`;
+    }
+    
+    // Rank 1 Boundary
+    svg += `<rect x="465" y="140" width="290" height="150" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-dasharray="4 2" stroke-width="1.5" />`;
+    svg += `<text x="610" y="160" text-anchor="middle" fill="var(--accent-red)" font-size="12" font-family="JetBrains Mono">Rank 1</text>`;
+    
+    for(let t=0; t<2; t++) {
+        svg += `<rect x="${480}" y="${180 + t*40}" width="40" height="20" rx="4" fill="${colors[t]}" fill-opacity="0.2" stroke="${colors[t]}" stroke-width="1" />`;
+        svg += `<text x="${500}" y="${194 + t*40}" text-anchor="middle" fill="${colors[t]}" font-size="10" font-family="JetBrains Mono">T${t}</text>`;
+        
+        svg += `<path d="M 500 180 L 580 110" fill="none" stroke="${colors[t]}" stroke-width="1" stroke-dasharray="2 2" opacity="0.6"/>`;
+    }
+    
+    svg += `<text x="450" y="320" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Within the MPI rank boundary, OpenMP threads pull small dynamic chunks from the token queue,</text>`;
+    svg += `<text x="450" y="340" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">ensuring that slow vocabulary lookups don't bottleneck the entire node.</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderPositionalEncoding() {
+    let svg = '';
+    
+    svg += `<text x="450" y="40" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Replicated Workload: Positional Encoding</text>`;
+    
+    // Rank 0
+    svg += `<rect x="200" y="100" width="200" height="140" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="300" y="130" text-anchor="middle" fill="var(--accent-red)" font-size="14" font-family="JetBrains Mono">Rank 0</text>`;
+    
+    svg += `<rect x="220" y="150" width="160" height="60" rx="4" fill="rgba(77,166,255,0.15)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+    svg += `<text x="300" y="175" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-family="JetBrains Mono">omp for</text>`;
+    svg += `<text x="300" y="195" text-anchor="middle" fill="#fff" font-size="11" font-family="Inter">Encode FULL Array</text>`;
+    
+    // Rank 1
+    svg += `<rect x="500" y="100" width="200" height="140" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="600" y="130" text-anchor="middle" fill="var(--accent-red)" font-size="14" font-family="JetBrains Mono">Rank 1</text>`;
+    
+    svg += `<rect x="520" y="150" width="160" height="60" rx="4" fill="rgba(77,166,255,0.15)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+    svg += `<text x="600" y="175" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-family="JetBrains Mono">omp for</text>`;
+    svg += `<text x="600" y="195" text-anchor="middle" fill="#fff" font-size="11" font-family="Inter">Encode FULL Array</text>`;
+    
+    svg += `<text x="450" y="320" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">For extremely lightweight mathematical operations (like calculating sines and cosines),</text>`;
+    svg += `<text x="450" y="340" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">it is actually faster for every MPI rank to redundanty calculate the entire array</text>`;
+    svg += `<text x="450" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">using its local OpenMP threads than it is to split the work and pay the network MPI_Allgather overhead.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderHybridAttention() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Attention Matrix Projection (Hybrid)</text>`;
+    
+    // Rank 0 Node
+    svg += `<rect x="100" y="80" width="300" height="150" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="250" y="105" text-anchor="middle" fill="var(--accent-red)" font-size="14" font-family="JetBrains Mono">Rank 0</text>`;
+    
+    svg += `<rect x="120" y="125" width="260" height="85" rx="6" fill="rgba(77,166,255,0.1)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+    svg += `<text x="250" y="145" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-family="JetBrains Mono">#pragma omp parallel for</text>`;
+    svg += `<rect x="140" y="160" width="220" height="35" rx="4" fill="rgba(0,0,0,0.5)" stroke="var(--border-color)" />`;
+    svg += `<text x="250" y="182" text-anchor="middle" fill="#fff" font-size="12" font-family="JetBrains Mono">Compute Partial Q & K</text>`;
+    
+    // Rank 1 Node
+    svg += `<rect x="500" y="80" width="300" height="150" rx="8" fill="rgba(255,94,94,0.05)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="650" y="105" text-anchor="middle" fill="var(--accent-red)" font-size="14" font-family="JetBrains Mono">Rank 1</text>`;
+    
+    svg += `<rect x="520" y="125" width="260" height="85" rx="6" fill="rgba(77,166,255,0.1)" stroke="var(--accent-blue)" stroke-width="1.5" />`;
+    svg += `<text x="650" y="145" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-family="JetBrains Mono">#pragma omp parallel for</text>`;
+    svg += `<rect x="540" y="160" width="220" height="35" rx="4" fill="rgba(0,0,0,0.5)" stroke="var(--border-color)" />`;
+    svg += `<text x="650" y="182" text-anchor="middle" fill="#fff" font-size="12" font-family="JetBrains Mono">Compute Partial Q & K</text>`;
+    
+    // MPI AllReduce network operation
+    svg += `<rect x="350" y="270" width="200" height="50" rx="8" fill="rgba(180,125,255,0.15)" stroke="var(--accent-purple)" stroke-width="2" />`;
+    svg += `<text x="450" y="300" text-anchor="middle" fill="#fff" font-size="13" font-family="JetBrains Mono" font-weight="bold">MPI_Allreduce(MPI_SUM)</text>`;
+    
+    // Network flow arrows
+    svg += `<path d="M 250 230 C 250 270, 350 295, 350 295" fill="none" stroke="var(--accent-purple)" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrowNet)">
+        <animate attributeName="stroke-dashoffset" from="24" to="0" dur="1s" repeatCount="indefinite" />
+    </path>`;
+    
+    svg += `<path d="M 650 230 C 650 270, 550 295, 550 295" fill="none" stroke="var(--accent-purple)" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrowNet)">
+        <animate attributeName="stroke-dashoffset" from="24" to="0" dur="1s" repeatCount="indefinite" />
+    </path>`;
+    
+    svg += `<defs>
+        <marker id="arrowNet" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Local OpenMP threads parallelize the heavy matrix dot products for the token assigned to their node.</text>`;
+    svg += `<text x="450" y="380" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">The resulting partial sums are passed to the MPI backend to be synchronized globally.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 420');
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUDA Parallelization Visualization — Attention Summarizer</title>
+    <meta name="description" content="Interactive visualization of CUDA GPU parallelization strategies used in the Attention Summarizer HPC project.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0c14;
+            --bg-panel: rgba(18, 22, 36, 0.85);
+            --accent-green: #76e4aa;
+            --accent-cyan: #00e5ff;
+            --accent-purple: #b47dff;
+            --accent-orange: #ffab40;
+            --accent-pink: #ff4d8d;
+            --accent-yellow: #ffe066;
+            --text-main: #e2e8f0;
+            --text-muted: #7e8aa0;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --glass: rgba(255,255,255,0.03);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            background-image:
+                radial-gradient(ellipse at 10% 80%, rgba(118, 228, 170, 0.06), transparent 40%),
+                radial-gradient(ellipse at 90% 20%, rgba(0, 229, 255, 0.06), transparent 40%),
+                radial-gradient(ellipse at 50% 50%, rgba(180, 125, 255, 0.04), transparent 50%);
+        }
+
+        /* ─── Sidebar ─── */
+        #sidebar {
+            width: 330px;
+            min-width: 330px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            z-index: 10;
+        }
+
+        #sidebar-header {
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 1rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        #sidebar-subtitle {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #steps-list {
+            list-style: none;
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+            margin-top: 16px;
+        }
+        #steps-list::-webkit-scrollbar { width: 4px; }
+        #steps-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+        .step-item {
+            padding: 10px 14px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-item:hover { background: rgba(255,255,255,0.04); }
+        .step-item.active {
+            background: rgba(0, 229, 255, 0.08);
+            border-color: rgba(0, 229, 255, 0.25);
+            color: var(--accent-cyan);
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.08);
+        }
+        .step-item.completed { color: var(--text-main); }
+        .step-item .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+            box-shadow: 0 0 6px currentColor;
+        }
+        .step-item .badge {
+            margin-left: auto;
+            font-size: 0.6rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-gpu { background: rgba(118, 228, 170, 0.15); color: var(--accent-green); }
+        .badge-cpu { background: rgba(255, 171, 64, 0.15); color: var(--accent-orange); }
+        .badge-flow { background: rgba(180, 125, 255, 0.15); color: var(--accent-purple); }
+
+        /* Controls */
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+        }
+        button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+        button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btn-next {
+            background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));
+            color: #0a0c14;
+            border: none;
+            font-weight: 800;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+            filter: brightness(1.1);
+        }
+
+        /* ─── Main Stage ─── */
+        #main-stage {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 32px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #stage-header {
+            margin-bottom: 24px;
+            transition: opacity 0.3s;
+        }
+        #stage-title {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        #stage-desc {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            max-width: 900px;
+            line-height: 1.65;
+        }
+
+        #visualization-area {
+            flex-grow: 1;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.4);
+            transition: opacity 0.3s;
+        }
+
+        /* ─── Reusable Components ─── */
+        .glass-box {
+            background: var(--glass);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(8px);
+        }
+        .code-font { font-family: 'JetBrains Mono', monospace; }
+        .flex-center { display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%; height: 100%; }
+        .row { display: flex; gap: 24px; align-items: center; justify-content: center; flex-wrap: wrap; }
+
+        /* SVG Canvas */
+        .viz-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+
+        /* Grid cells for GPU blocks */
+        .gpu-block {
+            rx: 4; ry: 4;
+            stroke-width: 1;
+            transition: all 0.4s ease;
+        }
+        .gpu-block:hover { filter: brightness(1.4); }
+
+        /* Thread indicator */
+        .thread-dot {
+            transition: all 0.3s ease;
+        }
+
+        /* Animated arrows */
+        .flow-arrow {
+            stroke-dasharray: 8 4;
+            animation: dash 1s linear infinite;
+        }
+        @keyframes dash {
+            to { stroke-dashoffset: -12; }
+        }
+
+        /* Pulse animation */
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.92); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes slideRight {
+            from { transform: translateX(-30px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes reductionPulse {
+            0% { fill-opacity: 0.2; }
+            50% { fill-opacity: 0.8; }
+            100% { fill-opacity: 0.2; }
+        }
+        @keyframes dataFlow {
+            0% { stroke-dashoffset: 0; }
+            100% { stroke-dashoffset: -20; }
+        }
+        @keyframes kernelLaunch {
+            0% { r: 2; opacity: 1; }
+            100% { r: 20; opacity: 0; }
+        }
+        @keyframes threadWork {
+            0% { opacity: 0.3; }
+            50% { opacity: 1; }
+            100% { opacity: 0.3; }
+        }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 16px;
+            right: 16px;
+            display: flex;
+            gap: 16px;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            z-index: 5;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .legend-dot {
+            width: 8px; height: 8px;
+            border-radius: 2px;
+        }
+
+        /* Kernel tag */
+        .kernel-tag {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 4px;
+            letter-spacing: 0.5px;
+        }
+
+        /* Welcome Hero */
+        .hero-gpu {
+            perspective: 600px;
+        }
+        .hero-gpu .chip {
+            width: 120px; height: 120px;
+            background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(180,125,255,0.15));
+            border: 1px solid rgba(0,229,255,0.3);
+            border-radius: 16px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            grid-template-rows: repeat(4, 1fr);
+            gap: 3px;
+            padding: 8px;
+            animation: fadeInScale 1s ease;
+        }
+        .hero-gpu .sm {
+            background: rgba(0,229,255,0.3);
+            border-radius: 3px;
+            animation: threadWork 1.5s ease infinite;
+        }
+
+        /* Complexity badge */
+        .complexity {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--accent-cyan);
+            background: rgba(0,229,255,0.08);
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid rgba(0,229,255,0.15);
+            display: inline-block;
+            margin-top: 6px;
+        }
+
+        /* Shared memory box */
+        .shmem-box {
+            background: rgba(255, 171, 64, 0.08);
+            border: 1px dashed rgba(255, 171, 64, 0.35);
+            border-radius: 8px;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>CUDA Parallelization</h1>
+            <div id="sidebar-subtitle">Attention Summarizer GPU Pipeline</div>
+        </div>
+        <ul id="steps-list"></ul>
+        <div id="controls">
+            <button id="btn-prev" disabled>◂ Prev</button>
+            <button id="btn-next">Next ▸</button>
+        </div>
+    </div>
+
+    <div id="main-stage">
+        <div id="stage-header">
+            <h2 id="stage-title">GPU Parallelization Pipeline</h2>
+            <p id="stage-desc">Explore how the Attention Summarizer accelerates computation using CUDA kernels. Click <strong>Next</strong> to walk through each parallelization stage.</p>
+        </div>
+        <div id="visualization-area">
+            <div class="flex-center">
+                <div class="hero-gpu">
+                    <div class="chip" id="hero-chip"></div>
+                </div>
+                <h3 style="margin-top:24px; font-weight:300; letter-spacing:3px; text-transform:uppercase; font-size:0.9rem; color:var(--text-muted);">
+                    CUDA Kernel Visualization
+                </h3>
+                <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted);">
+                    8 GPU Kernels · 12 Attention Heads · 300D Embeddings
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// Initialize hero chip
+(() => {
+    const chip = document.getElementById('hero-chip');
+    for (let i = 0; i < 16; i++) {
+        const sm = document.createElement('div');
+        sm.className = 'sm';
+        sm.style.animationDelay = `${i * 0.1}s`;
+        chip.appendChild(sm);
+    }
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   STEP DEFINITIONS
+   ═══════════════════════════════════════════════════════════════════ */
+const steps = [
+    {
+        title: 'Pipeline Overview',
+        badge: 'flow',
+        desc: 'The CUDA Attention Summarizer splits work between CPU and GPU. Heavy linear-algebra stages (covariance, projections, attention) run on the GPU as parallel kernels. Sequential stages (GloVe loading, Jacobi eigen, tokenization, scoring) remain on the CPU.',
+        render: renderOverview
+    },
+    {
+        title: 'K0: Transpose Vocab',
+        badge: 'gpu',
+        desc: 'Before computing covariance, vocabulary vectors are transposed from row-major [V×D] to dimension-major [D×V] using a tiled transpose kernel. This enables coalesced memory access for the mean and covariance kernels. Uses shared memory tiles of 32×32 with +1 padding to avoid bank conflicts.',
+        render: renderTranspose
+    },
+    {
+        title: 'K1: Parallel Mean',
+        badge: 'gpu',
+        desc: 'Computes the mean vector across all 500K vocabulary embeddings. Each of the 300 CUDA blocks handles one embedding dimension. Within each block, 256 threads cooperatively reduce over V vocabulary entries using shared-memory parallel reduction, halving active threads at each step.',
+        render: renderMeanKernel
+    },
+    {
+        title: 'K2: Covariance Matrix',
+        badge: 'gpu',
+        desc: 'Builds the 300×300 covariance matrix. Only the lower triangle is computed (45,150 unique pairs). Each block handles one (i,j) pair, with 256 threads performing a shared-memory parallel reduction across all V vocabulary vectors. The result is mirrored to fill the upper triangle.',
+        render: renderCovarianceKernel
+    },
+    {
+        title: 'Jacobi Eigen (CPU)',
+        badge: 'cpu',
+        desc: 'Eigendecomposition runs on CPU via Jacobi rotations (100 sweeps on the 300×300 covariance matrix). This is inherently sequential due to sweep-level data dependencies. Produces eigenvectors and eigenvalues used to build the whitening matrices W_Q and W_K.',
+        render: renderJacobiCPU
+    },
+    {
+        title: 'K3: Project Embeddings',
+        badge: 'gpu',
+        desc: 'Transforms token embeddings by multiplying with W_Q and W_K matrices. Each token gets its own CUDA block (n_tokens blocks total). Within each block, 256 threads stride over the 300 output dimensions, each computing a full dot product of length 300. Launched twice — once for Q, once for K.',
+        render: renderProjectKernel
+    },
+    {
+        title: 'K4: QK^T Dot Product',
+        badge: 'gpu',
+        desc: 'Computes scaled dot-product scores for all heads simultaneously. Uses a 3D grid: (⌈T/256⌉, T, H=12). Each thread computes one score element scores[h][i][j] = (Qᵢ · Kⱼ) / √d, where d=25 is the head dimension. All T² × H scores are computed in one kernel launch.',
+        render: renderQKDotKernel
+    },
+    {
+        title: 'K5: Softmax',
+        badge: 'gpu',
+        desc: 'Applies row-wise numerically-stable softmax to attention scores. Each thread handles one complete row (head h, query token i). Uses max-subtraction before exponentiation for numerical stability. Grid: ⌈(H×T)/256⌉ blocks of 256 threads.',
+        render: renderSoftmaxKernel
+    },
+    {
+        title: 'K6: Attention Output',
+        badge: 'gpu',
+        desc: 'Computes the attention-weighted output: out[i][offset+d] = Σⱼ attn[h][i][j] × V[j][offset+d]. Uses a 3D grid: (⌈d/32⌉, T, H). Each thread computes one output element by reducing over all tokens j, for one query i, one head h, one sub-dimension d.',
+        render: renderAttnOutputKernel
+    },
+    {
+        title: 'K7: Average Heads',
+        badge: 'gpu',
+        desc: 'Averages attention weights across all 12 heads to produce a single T×T attention matrix. Uses a 2D grid: (⌈T/256⌉, T). Each thread handles one element avg_attn[i][j] by summing over all H heads and dividing by H.',
+        render: renderAverageHeadsKernel
+    },
+    {
+        title: 'K8: Head Diagonal Mean',
+        badge: 'gpu',
+        desc: 'Diagnostic kernel that computes per-head average self-attention (diagonal elements). One block per head (12 blocks), 256 threads per block. Uses shared-memory parallel reduction to sum diagonal values attn[h][i][i] for all tokens i. Avoids copying the full H×T×T score tensor back to host.',
+        render: renderDiagMeanKernel
+    },
+    {
+        title: 'Memory & Data Flow',
+        badge: 'flow',
+        desc: 'Visualizes the complete Host↔Device data transfer pattern. Pinned host memory (cudaMallocHost) is used for large transfers. GPU memory is allocated for embeddings, weight matrices, score tensors, and outputs. Transfers are minimized — only final results are copied back.',
+        render: renderMemoryFlow
+    }
+];
+
+let currentStep = -1;
+const listEl = document.getElementById('steps-list');
+const titleEl = document.getElementById('stage-title');
+const descEl = document.getElementById('stage-desc');
+const visEl = document.getElementById('visualization-area');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+
+steps.forEach((step, idx) => {
+    const li = document.createElement('li');
+    li.className = 'step-item';
+    li.innerHTML = `<span class="dot"></span><span>${step.title}</span><span class="badge badge-${step.badge}">${step.badge}</span>`;
+    li.onclick = () => goToStep(idx);
+    listEl.appendChild(li);
+});
+
+function goToStep(idx) {
+    if (idx < 0 || idx >= steps.length) return;
+    currentStep = idx;
+    visEl.style.opacity = '0';
+    document.getElementById('stage-header').style.opacity = '0';
+    setTimeout(() => {
+        const step = steps[idx];
+        titleEl.innerText = step.title;
+        descEl.innerHTML = step.desc;
+        visEl.innerHTML = '';
+        step.render();
+        visEl.style.opacity = '1';
+        const header = document.getElementById('stage-header');
+        header.style.opacity = '1';
+        header.style.animation = 'none';
+        void header.offsetWidth;
+        header.style.animation = 'fadeInUp 0.5s ease';
+        updateSidebar();
+        updateControls();
+    }, 300);
+}
+
+function updateSidebar() {
+    listEl.querySelectorAll('li').forEach((li, idx) => {
+        li.classList.remove('active', 'completed');
+        if (idx === currentStep) li.classList.add('active');
+        else if (idx < currentStep) li.classList.add('completed');
+    });
+}
+
+function updateControls() {
+    btnPrev.disabled = currentStep < 0;
+    btnNext.disabled = currentStep === steps.length - 1;
+    btnNext.innerText = currentStep === steps.length - 1 ? 'Done' : 'Next ▸';
+}
+
+btnPrev.addEventListener('click', () => goToStep(currentStep - 1));
+btnNext.addEventListener('click', () => {
+    if (currentStep === -1) goToStep(0);
+    else goToStep(currentStep + 1);
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER FUNCTIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function svgWrap(inner, viewBox = '0 0 900 480') {
+    return `<svg class="viz-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+}
+
+function renderOverview() {
+    const stages = [
+        { name: 'Load GloVe', type: 'cpu', y: 30, detail: 'O(V×D)' },
+        { name: 'Transpose Vocab', type: 'gpu', y: 80, detail: 'K0: Tiled' },
+        { name: 'Compute Mean', type: 'gpu', y: 130, detail: 'K1: Reduction' },
+        { name: 'Covariance Matrix', type: 'gpu', y: 180, detail: 'K2: 45K blocks' },
+        { name: 'Jacobi Eigen', type: 'cpu', y: 230, detail: '100 sweeps' },
+        { name: 'Build W_Q, W_K', type: 'cpu', y: 280, detail: 'O(D²)' },
+        { name: 'Tokenize + Vectorize', type: 'cpu', y: 330, detail: 'O(T×V)' },
+        { name: 'Project Q, K', type: 'gpu', y: 380, detail: 'K3: T blocks' },
+        { name: 'QK^T + Softmax', type: 'gpu', y: 430, detail: 'K4+K5: 3D grid' },
+        { name: 'Attn Output', type: 'gpu', y: 480, detail: 'K6: 3D grid' },
+        { name: 'Avg Heads + Diag', type: 'gpu', y: 530, detail: 'K7+K8' },
+        { name: 'Sentence Scoring', type: 'cpu', y: 580, detail: 'O(T²)' },
+    ];
+
+    let svg = '';
+    // Background columns
+    svg += `<rect x="60" y="10" width="360" height="600" rx="12" fill="rgba(255,171,64,0.03)" stroke="rgba(255,171,64,0.1)" stroke-dasharray="4 2"/>`;
+    svg += `<rect x="480" y="10" width="360" height="600" rx="12" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.1)" stroke-dasharray="4 2"/>`;
+    svg += `<text x="240" y="625" text-anchor="middle" fill="rgba(255,171,64,0.6)" font-size="11" font-family="Inter" font-weight="700" letter-spacing="2">CPU</text>`;
+    svg += `<text x="660" y="625" text-anchor="middle" fill="rgba(0,229,255,0.6)" font-size="11" font-family="Inter" font-weight="700" letter-spacing="2">GPU</text>`;
+
+    stages.forEach((s, i) => {
+        const x = s.type === 'cpu' ? 120 : 540;
+        const color = s.type === 'cpu' ? '#ffab40' : '#00e5ff';
+        const bgColor = s.type === 'cpu' ? 'rgba(255,171,64,0.08)' : 'rgba(0,229,255,0.08)';
+        const delay = i * 0.08;
+
+        svg += `<g style="animation: fadeInUp 0.5s ease ${delay}s both;">`;
+        svg += `<rect x="${x}" y="${s.y}" width="240" height="38" rx="8" fill="${bgColor}" stroke="${color}" stroke-width="1" stroke-opacity="0.4"/>`;
+        svg += `<text x="${x + 15}" y="${s.y + 23}" fill="#fff" font-size="12" font-weight="600" font-family="Inter">${s.name}</text>`;
+        svg += `<text x="${x + 225}" y="${s.y + 23}" fill="${color}" font-size="9" text-anchor="end" font-family="JetBrains Mono" opacity="0.8">${s.detail}</text>`;
+        svg += `</g>`;
+
+        // Connecting arrows
+        if (i < stages.length - 1) {
+            const next = stages[i + 1];
+            const cx1 = s.type === 'cpu' ? 240 : 660;
+            const cx2 = next.type === 'cpu' ? 240 : 660;
+            const y1 = s.y + 38;
+            const y2 = next.y;
+            if (s.type !== next.type) {
+                // Cross transfer
+                svg += `<path d="M${cx1},${y1} C${cx1},${(y1+y2)/2} ${cx2},${(y1+y2)/2} ${cx2},${y2}" fill="none" stroke="rgba(180,125,255,0.4)" stroke-width="1.5" stroke-dasharray="4 3" style="animation: dataFlow 1s linear infinite;"/>`;
+                svg += `<circle cx="${(cx1+cx2)/2}" cy="${(y1+y2)/2}" r="3" fill="var(--accent-purple)" opacity="0.6" style="animation: pulse 1.5s infinite;"/>`;
+            } else {
+                svg += `<line x1="${cx1}" y1="${y1}" x2="${cx2}" y2="${y2}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>`;
+            }
+        }
+    });
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 640');
+}
+
+
+function renderTranspose() {
+    let svg = '';
+    const tileSize = 32;
+
+    // Title Labels
+    svg += `<text x="180" y="25" text-anchor="middle" fill="#fff" font-size="14" font-weight="700" font-family="Inter">Row-Major [V × D]</text>`;
+    svg += `<text x="700" y="25" text-anchor="middle" fill="#fff" font-size="14" font-weight="700" font-family="Inter">Dim-Major [D × V]</text>`;
+
+    // Source matrix (row-major)
+    for (let r = 0; r < 6; r++) {
+        for (let c = 0; c < 8; c++) {
+            const x = 60 + c * 30;
+            const y = 45 + r * 30;
+            const inTile = r < 4 && c < 4;
+            const fill = inTile ? 'rgba(0,229,255,0.25)' : 'rgba(255,255,255,0.05)';
+            const stroke = inTile ? 'rgba(0,229,255,0.5)' : 'rgba(255,255,255,0.08)';
+            svg += `<rect x="${x}" y="${y}" width="26" height="26" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`;
+        }
+    }
+    // Tile highlight
+    svg += `<rect x="58" y="43" width="122" height="122" rx="6" fill="none" stroke="var(--accent-cyan)" stroke-width="2" stroke-dasharray="4 2" style="animation: pulse 2s infinite;"/>`;
+    svg += `<text x="119" y="185" text-anchor="middle" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">32×32 tile</text>`;
+
+    // Row/column labels
+    svg += `<text x="55" y="62" text-anchor="end" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">v₀</text>`;
+    svg += `<text x="55" y="92" text-anchor="end" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">v₁</text>`;
+    svg += `<text x="73" y="42" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">d₀</text>`;
+    svg += `<text x="103" y="42" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">d₁</text>`;
+
+    // Shared Memory Box in center
+    svg += `<rect x="340" y="100" width="200" height="200" rx="12" fill="rgba(255,171,64,0.06)" stroke="rgba(255,171,64,0.3)" stroke-width="1.5" stroke-dasharray="6 3"/>`;
+    svg += `<text x="440" y="130" text-anchor="middle" fill="var(--accent-orange)" font-size="12" font-weight="700" font-family="Inter">Shared Memory</text>`;
+    svg += `<text x="440" y="148" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">tile[32][32+1]</text>`;
+    svg += `<text x="440" y="165" text-anchor="middle" fill="var(--accent-orange)" font-size="8" font-family="JetBrains Mono" opacity="0.7">+1 avoids bank conflicts</text>`;
+
+    // Tile cells in shared memory
+    for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+            const x = 380 + c * 28;
+            const y = 180 + r * 28;
+            svg += `<rect x="${x}" y="${y}" width="24" height="24" rx="3" fill="rgba(255,171,64,0.15)" stroke="rgba(255,171,64,0.3)" stroke-width="0.5">
+                <animate attributeName="fill-opacity" values="0.1;0.4;0.1" dur="${1 + r * 0.2}s" repeatCount="indefinite"/>
+            </rect>`;
+        }
+    }
+
+    // Destination matrix (dim-major)
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 6; c++) {
+            const x = 580 + c * 30;
+            const y = 45 + r * 30;
+            const inTile = r < 4 && c < 4;
+            const fill = inTile ? 'rgba(118,228,170,0.25)' : 'rgba(255,255,255,0.05)';
+            const stroke = inTile ? 'rgba(118,228,170,0.5)' : 'rgba(255,255,255,0.08)';
+            svg += `<rect x="${x}" y="${y}" width="26" height="26" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`;
+        }
+    }
+    svg += `<rect x="578" y="43" width="122" height="122" rx="6" fill="none" stroke="var(--accent-green)" stroke-width="2" stroke-dasharray="4 2" style="animation: pulse 2s infinite;"/>`;
+
+    // Flow arrows
+    svg += `<path d="M305,160 C330,160 340,160 340,200" fill="none" stroke="var(--accent-cyan)" stroke-width="1.5" marker-end="url(#arrowCyan)">
+        <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1s" repeatCount="indefinite"/>
+    </path>`;
+    svg += `<path d="M540,200 C540,160 560,160 580,160" fill="none" stroke="var(--accent-green)" stroke-width="1.5" marker-end="url(#arrowGreen)">
+        <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1s" repeatCount="indefinite"/>
+    </path>`;
+
+    // Arrow markers
+    svg += `<defs>
+        <marker id="arrowCyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-cyan)"/></marker>
+        <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-green)"/></marker>
+        <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+        <marker id="arrowOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-orange)"/></marker>
+    </defs>`;
+
+    // Thread mapping
+    svg += `<text x="440" y="340" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Block(32, 8) threads</text>`;
+    svg += `<text x="440" y="358" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Grid(⌈D/32⌉, ⌈V/32⌉)</text>`;
+
+    // Process description
+    svg += `<g style="animation: fadeIn 1s 0.5s both;">`;
+    svg += `<text x="120" y="280" fill="var(--accent-cyan)" font-size="11" font-weight="600" font-family="Inter">① Read coalesced rows</text>`;
+    svg += `<text x="440" y="380" text-anchor="middle" fill="var(--accent-orange)" font-size="11" font-weight="600" font-family="Inter">② Store transposed in __shared__</text>`;
+    svg += `<text x="700" y="280" text-anchor="middle" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">③ Write coalesced columns</text>`;
+    svg += `</g>`;
+
+    // __syncthreads barrier
+    svg += `<line x1="360" y1="172" x2="520" y2="172" stroke="var(--accent-pink)" stroke-width="2" stroke-dasharray="2 2"/>`;
+    svg += `<text x="440" y="170" text-anchor="middle" fill="var(--accent-pink)" font-size="8" font-family="JetBrains Mono">__syncthreads()</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 880 400');
+}
+
+
+function renderMeanKernel() {
+    let svg = '';
+
+    // Grid layout title
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K1: compute_mean_kernel</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Grid: 300 blocks × 256 threads — one block per dimension</text>`;
+
+    // Draw blocks (represent dimensions d=0..299)
+    const blockColors = ['#00e5ff', '#4dd0e1', '#26c6da', '#00bcd4', '#0097a7', '#00838f'];
+    for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 10; col++) {
+            const idx = row * 10 + col;
+            const x = 100 + col * 70;
+            const y = 65 + row * 50;
+            const color = blockColors[idx % blockColors.length];
+            svg += `<rect x="${x}" y="${y}" width="60" height="38" rx="6" fill="${color}11" stroke="${color}" stroke-width="1" stroke-opacity="0.5">
+                <animate attributeName="fill-opacity" values="0.4;0.8;0.4" dur="${1.2 + idx * 0.05}s" repeatCount="indefinite"/>
+            </rect>`;
+            svg += `<text x="${x+30}" y="${y+23}" text-anchor="middle" fill="${color}" font-size="9" font-weight="600" font-family="JetBrains Mono">d=${idx}</text>`;
+        }
+    }
+    svg += `<text x="830" y="110" fill="var(--text-muted)" font-size="11" font-family="JetBrains Mono">…d=299</text>`;
+
+    // Detailed view of one block
+    svg += `<rect x="60" y="240" width="780" height="220" rx="12" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.15)" stroke-width="1"/>`;
+    svg += `<text x="80" y="265" fill="var(--accent-cyan)" font-size="13" font-weight="700" font-family="Inter">Inside Block d=0 (256 threads)</text>`;
+
+    // Phase 1: Strided accumulation
+    svg += `<text x="80" y="290" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">Phase 1: Strided Accumulation</text>`;
+    // Show threads accumulating from vocabulary
+    for (let t = 0; t < 8; t++) {
+        const x = 100 + t * 90;
+        const y = 305;
+        svg += `<rect x="${x}" y="${y}" width="70" height="28" rx="4" fill="rgba(118,228,170,0.1)" stroke="rgba(118,228,170,0.3)" stroke-width="0.8"/>`;
+        svg += `<text x="${x+35}" y="${y+17}" text-anchor="middle" fill="var(--accent-green)" font-size="8" font-family="JetBrains Mono">t${t}: Σv[${t}..V]</text>`;
+        // Data flow dots
+        for (let d = 0; d < 3; d++) {
+            svg += `<circle cx="${x + 15 + d * 20}" cy="${y + 35}" r="2" fill="var(--accent-green)" opacity="0.5">
+                <animate attributeName="cy" values="${y+35};${y+25}" dur="0.8s" repeatCount="indefinite" begin="${d * 0.15}s"/>
+                <animate attributeName="opacity" values="0.5;1;0.5" dur="0.8s" repeatCount="indefinite" begin="${d * 0.15}s"/>
+            </circle>`;
+        }
+    }
+
+    // Phase 2: Tree reduction in shared memory
+    svg += `<text x="80" y="365" fill="var(--accent-orange)" font-size="11" font-weight="600" font-family="Inter">Phase 2: Shared-Memory Tree Reduction</text>`;
+
+    // Reduction tree
+    const levels = [
+        [{x:120, w:65}, {x:195, w:65}, {x:270, w:65}, {x:345, w:65}, {x:420, w:65}, {x:495, w:65}, {x:570, w:65}, {x:645, w:65}],
+        [{x:155, w:90}, {x:305, w:90}, {x:455, w:90}, {x:605, w:90}],
+        [{x:225, w:110}, {x:525, w:110}],
+        [{x:370, w:130}]
+    ];
+    const levelY = [380, 405, 430, 450];
+    const levelColors = ['rgba(255,171,64,0.2)', 'rgba(255,171,64,0.3)', 'rgba(255,171,64,0.4)', 'rgba(255,171,64,0.6)'];
+
+    levels.forEach((level, li) => {
+        level.forEach((node, ni) => {
+            svg += `<rect x="${node.x}" y="${levelY[li]}" width="${node.w}" height="18" rx="4" fill="${levelColors[li]}" stroke="rgba(255,171,64,0.5)" stroke-width="0.5">
+                <animate attributeName="fill-opacity" values="0.3;0.7;0.3" dur="1.5s" repeatCount="indefinite" begin="${li * 0.3}s"/>
+            </rect>`;
+        });
+        // Draw connecting lines between levels
+        if (li < levels.length - 1) {
+            const next = levels[li + 1];
+            level.forEach((node, ni) => {
+                const parentIdx = Math.floor(ni / 2);
+                if (parentIdx < next.length) {
+                    const x1 = node.x + node.w / 2;
+                    const y1 = levelY[li] + 18;
+                    const x2 = next[parentIdx].x + next[parentIdx].w / 2;
+                    const y2 = levelY[li + 1];
+                    svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,171,64,0.3)" stroke-width="0.8"/>`;
+                }
+            });
+        }
+    });
+
+    // Final result
+    svg += `<text x="435" y="445" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="JetBrains Mono">sum</text>`;
+    svg += `<text x="435" y="472" text-anchor="middle" fill="var(--accent-cyan)" font-size="10" font-weight="600" font-family="JetBrains Mono">mean[d] = sum / V</text>`;
+
+    // syncthreads barriers
+    for (let li = 0; li < 3; li++) {
+        const y = levelY[li] + 20;
+        svg += `<line x1="110" y1="${y}" x2="730" y2="${y}" stroke="var(--accent-pink)" stroke-width="0.5" stroke-dasharray="2 3" opacity="0.4"/>`;
+        svg += `<text x="745" y="${y + 3}" fill="var(--accent-pink)" font-size="6" font-family="JetBrains Mono" opacity="0.6">sync</text>`;
+    }
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 480');
+}
+
+
+function renderCovarianceKernel() {
+    let svg = '';
+    const D = 300;
+    const pairs = D * (D + 1) / 2;
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K2: covariance_kernel</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">${pairs.toLocaleString()} blocks (lower triangle) × 256 threads each</text>`;
+
+    // Lower triangle matrix visualization
+    const matSize = 12;
+    const cellSize = 24;
+    const matX = 60;
+    const matY = 70;
+
+    for (let i = 0; i < matSize; i++) {
+        for (let j = 0; j < matSize; j++) {
+            const x = matX + j * (cellSize + 2);
+            const y = matY + i * (cellSize + 2);
+            let fill, stroke;
+            if (j <= i) {
+                const intensity = 0.1 + (i + j) * 0.03;
+                fill = `rgba(0,229,255,${intensity})`;
+                stroke = 'rgba(0,229,255,0.4)';
+            } else {
+                fill = 'rgba(180,125,255,0.06)';
+                stroke = 'rgba(180,125,255,0.15)';
+            }
+            svg += `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="0.8"/>`;
+        }
+    }
+
+    // Labels
+    svg += `<text x="${matX + 6 * 26}" y="${matY - 8}" text-anchor="middle" fill="var(--accent-cyan)" font-size="10" font-weight="600" font-family="Inter">Computed (j ≤ i)</text>`;
+
+    // Mirror arrow
+    svg += `<path d="M${matX + matSize * 26 + 20},${matY + 80} L${matX + matSize * 26 + 40},${matY + 80}" fill="none" stroke="var(--accent-purple)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>`;
+    svg += `<text x="${matX + matSize * 26 + 55}" y="${matY + 84}" fill="var(--accent-purple)" font-size="9" font-family="Inter">Mirror to upper triangle</text>`;
+
+    // Diagonal highlight
+    for (let i = 0; i < matSize; i++) {
+        const x = matX + i * (cellSize + 2);
+        const y = matY + i * (cellSize + 2);
+        svg += `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" rx="3" fill="none" stroke="var(--accent-green)" stroke-width="2">
+            <animate attributeName="stroke-opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
+        </rect>`;
+    }
+
+    // Block detail on right
+    const detailX = 430;
+    svg += `<rect x="${detailX}" y="65" width="420" height="240" rx="12" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.12)" stroke-width="1"/>`;
+    svg += `<text x="${detailX + 20}" y="90" fill="#fff" font-size="13" font-weight="700" font-family="Inter">One Block: cov[i][j]</text>`;
+
+    // Index mapping formula
+    svg += `<text x="${detailX + 20}" y="115" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">pair_idx = blockIdx.x</text>`;
+    svg += `<text x="${detailX + 20}" y="132" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">i = ⌊(√(8·pair_idx+1)-1)/2⌋</text>`;
+    svg += `<text x="${detailX + 20}" y="149" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">j = pair_idx - i·(i+1)/2</text>`;
+
+    // Thread work
+    svg += `<text x="${detailX + 20}" y="180" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">256 threads reduce over V vocab vectors:</text>`;
+
+    // Show strided reduction
+    for (let t = 0; t < 6; t++) {
+        const x = detailX + 30 + t * 64;
+        const y = 195;
+        svg += `<rect x="${x}" y="${y}" width="54" height="22" rx="4" fill="rgba(118,228,170,0.1)" stroke="rgba(118,228,170,0.3)" stroke-width="0.5"/>`;
+        svg += `<text x="${x+27}" y="${y+15}" text-anchor="middle" fill="var(--accent-green)" font-size="7" font-family="JetBrains Mono">Σ(xᵢ-μᵢ)(xⱼ-μⱼ)</text>`;
+    }
+    svg += `<text x="${detailX + 415}" y="210" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">…</text>`;
+
+    // Shared memory reduction
+    svg += `<rect x="${detailX + 30}" y="230" width="360" height="30" rx="6" fill="rgba(255,171,64,0.08)" stroke="rgba(255,171,64,0.2)" stroke-width="1" stroke-dasharray="4 2"/>`;
+    svg += `<text x="${detailX + 210}" y="250" text-anchor="middle" fill="var(--accent-orange)" font-size="10" font-weight="600" font-family="JetBrains Mono">sdata[256] → tree reduction → sum</text>`;
+
+    // Result
+    svg += `<text x="${detailX + 210}" y="280" text-anchor="middle" fill="#fff" font-size="11" font-weight="600" font-family="JetBrains Mono">cov[i][j] = cov[j][i] = sum / (V-1)</text>`;
+
+    // Bottom summary
+    svg += `<rect x="60" y="340" width="790" height="55" rx="10" fill="rgba(180,125,255,0.05)" stroke="rgba(180,125,255,0.15)" stroke-width="1"/>`;
+    svg += `<text x="80" y="365" fill="var(--accent-purple)" font-size="11" font-weight="700" font-family="Inter">Parallelism</text>`;
+    svg += `<text x="80" y="382" fill="var(--text-muted)" font-size="10" font-family="Inter">45,150 independent blocks × 256 cooperative threads = ~11.6M parallel work items across all streaming multiprocessors</text>`;
+
+    svg += `<defs>
+        <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+    </defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 410');
+}
+
+
+function renderJacobiCPU() {
+    let svg = '';
+
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">Jacobi Eigendecomposition (CPU-only)</text>`;
+    svg += `<text x="450" y="50" text-anchor="middle" fill="var(--accent-orange)" font-size="10" font-family="JetBrains Mono">Sequential — sweep-level data dependencies prevent GPU parallelization</text>`;
+
+    // 300x300 covariance input
+    svg += `<rect x="40" y="80" width="160" height="160" rx="12" fill="rgba(0,229,255,0.06)" stroke="rgba(0,229,255,0.2)" stroke-width="1"/>`;
+    svg += `<text x="120" y="165" text-anchor="middle" fill="var(--accent-cyan)" font-size="12" font-weight="600" font-family="Inter">Cov[300×300]</text>`;
+    svg += `<text x="120" y="185" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">from GPU</text>`;
+
+    // Arrow
+    svg += `<path d="M210,160 L260,160" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+
+    // Jacobi sweep loop
+    svg += `<rect x="270" y="75" width="340" height="250" rx="14" fill="rgba(255,171,64,0.04)" stroke="rgba(255,171,64,0.2)" stroke-width="1.5"/>`;
+    svg += `<text x="440" y="100" text-anchor="middle" fill="var(--accent-orange)" font-size="13" font-weight="700" font-family="Inter">100 Sweeps</text>`;
+
+    // Inner loop visualization
+    const sweepY = 115;
+    for (let s = 0; s < 5; s++) {
+        const y = sweepY + s * 38;
+        const alpha = 1 - s * 0.15;
+        svg += `<rect x="290" y="${y}" width="300" height="30" rx="6" fill="rgba(255,171,64,${0.05 + s * 0.02})" stroke="rgba(255,171,64,${0.15 + s * 0.05})" stroke-width="0.8"/>`;
+        svg += `<text x="310" y="${y + 19}" fill="var(--accent-orange)" font-size="9" font-family="JetBrains Mono" opacity="${alpha}">sweep ${s}: ∀(p,q) → rotate S, update V</text>`;
+
+        // Convergence check
+        svg += `<circle cx="560" cy="${y + 15}" r="6" fill="none" stroke="rgba(255,171,64,0.4)" stroke-width="1">
+            <animate attributeName="stroke" values="rgba(255,171,64,0.3);rgba(255,171,64,0.8);rgba(255,171,64,0.3)" dur="2s" repeatCount="indefinite" begin="${s * 0.3}s"/>
+        </circle>`;
+    }
+    svg += `<text x="440" y="310" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">…converge when off-diagonal < 1e-10</text>`;
+
+    // Outputs
+    svg += `<path d="M620,160 L670,160" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+
+    svg += `<rect x="680" y="80" width="170" height="70" rx="10" fill="rgba(118,228,170,0.06)" stroke="rgba(118,228,170,0.2)" stroke-width="1"/>`;
+    svg += `<text x="765" y="110" text-anchor="middle" fill="var(--accent-green)" font-size="12" font-weight="600" font-family="Inter">Eigenvectors V</text>`;
+    svg += `<text x="765" y="128" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">300 × 300</text>`;
+
+    svg += `<rect x="680" y="170" width="170" height="70" rx="10" fill="rgba(180,125,255,0.06)" stroke="rgba(180,125,255,0.2)" stroke-width="1"/>`;
+    svg += `<text x="765" y="200" text-anchor="middle" fill="var(--accent-purple)" font-size="12" font-weight="600" font-family="Inter">Eigenvalues λ</text>`;
+    svg += `<text x="765" y="218" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">300 values</text>`;
+
+    // Build W_Q, W_K
+    svg += `<path d="M765,250 L765,290" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+    svg += `<rect x="650" y="300" width="230" height="60" rx="10" fill="rgba(0,229,255,0.06)" stroke="rgba(0,229,255,0.2)" stroke-width="1"/>`;
+    svg += `<text x="765" y="325" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="Inter">W_Q, W_K = V · diag(1/√λ)</text>`;
+    svg += `<text x="765" y="345" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">PCA whitening matrices → upload to GPU</text>`;
+
+    // Why CPU callout
+    svg += `<rect x="40" y="340" width="560" height="50" rx="8" fill="rgba(255,77,141,0.05)" stroke="rgba(255,77,141,0.2)" stroke-width="1"/>`;
+    svg += `<text x="60" y="362" fill="var(--accent-pink)" font-size="10" font-weight="700" font-family="Inter">⚠ Why CPU?</text>`;
+    svg += `<text x="150" y="362" fill="var(--text-muted)" font-size="10" font-family="Inter">Each rotation modifies shared rows/cols of S and V — creating sweep-level write dependencies.</text>`;
+    svg += `<text x="60" y="380" fill="var(--text-muted)" font-size="10" font-family="Inter">Parallel Jacobi exists but gains are marginal for D=300 matrices due to synchronization cost.</text>`;
+
+    svg += `<defs><marker id="arrowWhite" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,255,255,0.5)"/></marker></defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+
+function renderProjectKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K3: project_kernel — Q = E × W_Q,  K = E × W_K</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Grid: n_tokens blocks × 256 threads — one block per token</text>`;
+
+    // Input embeddings (left)
+    svg += `<text x="80" y="75" fill="var(--accent-cyan)" font-size="11" font-weight="600" font-family="Inter">Embeddings [T × 300]</text>`;
+    for (let t = 0; t < 7; t++) {
+        const y = 90 + t * 26;
+        svg += `<rect x="60" y="${y}" width="160" height="20" rx="4" fill="rgba(0,229,255,${0.06 + t * 0.02})" stroke="rgba(0,229,255,0.25)" stroke-width="0.6"/>`;
+        svg += `<text x="70" y="${y + 14}" fill="var(--accent-cyan)" font-size="8" font-family="JetBrains Mono">tok ${t}  [300 floats]</text>`;
+    }
+    svg += `<text x="140" y="${90 + 7 * 26 + 10}" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">…</text>`;
+
+    // Weight matrix (center)
+    svg += `<text x="370" y="75" fill="var(--accent-purple)" font-size="11" font-weight="600" font-family="Inter">W_Q [300 × 300]</text>`;
+    svg += `<rect x="300" y="90" width="140" height="140" rx="10" fill="rgba(180,125,255,0.06)" stroke="rgba(180,125,255,0.25)" stroke-width="1"/>`;
+    for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+            svg += `<rect x="${310 + c * 25}" y="${100 + r * 25}" width="20" height="20" rx="2" fill="rgba(180,125,255,${0.1 + (r + c) * 0.03})" stroke="rgba(180,125,255,0.2)" stroke-width="0.3"/>`;
+        }
+    }
+
+    // Multiplication symbol
+    svg += `<text x="260" y="165" text-anchor="middle" fill="#fff" font-size="24" font-weight="300">×</text>`;
+
+    // Arrow to output
+    svg += `<path d="M450,160 L500,160" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+    svg += `<text x="475" y="150" text-anchor="middle" fill="#fff" font-size="18" font-weight="300">=</text>`;
+
+    // Output Q (right)
+    svg += `<text x="580" y="75" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">Q [T × 300]</text>`;
+    for (let t = 0; t < 7; t++) {
+        const y = 90 + t * 26;
+        svg += `<rect x="520" y="${y}" width="160" height="20" rx="4" fill="rgba(118,228,170,${0.06 + t * 0.02})" stroke="rgba(118,228,170,0.25)" stroke-width="0.6"/>`;
+        svg += `<text x="530" y="${y + 14}" fill="var(--accent-green)" font-size="8" font-family="JetBrains Mono">q ${t}  [300 floats]</text>`;
+    }
+
+    // Thread mapping detail box
+    svg += `<rect x="60" y="300" width="780" height="140" rx="12" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.12)" stroke-width="1"/>`;
+    svg += `<text x="80" y="325" fill="#fff" font-size="13" font-weight="700" font-family="Inter">Thread Mapping (inside one block for token i)</text>`;
+
+    // Show threads distributing over output dimensions
+    svg += `<text x="80" y="350" fill="var(--accent-green)" font-size="10" font-family="JetBrains Mono">for (j = threadIdx.x; j < 300; j += 256)</text>`;
+
+    for (let t = 0; t < 10; t++) {
+        const x = 100 + t * 70;
+        const y = 365;
+        const threadId = t;
+        const dims = t < 2 ? `j=${t}, ${t + 256}` : `j=${t}…`;
+        svg += `<rect x="${x}" y="${y}" width="60" height="50" rx="6" fill="rgba(118,228,170,0.08)" stroke="rgba(118,228,170,0.2)" stroke-width="0.6">
+            <animate attributeName="fill-opacity" values="0.5;1;0.5" dur="${1.5 + t * 0.1}s" repeatCount="indefinite"/>
+        </rect>`;
+        svg += `<text x="${x+30}" y="${y+18}" text-anchor="middle" fill="var(--accent-green)" font-size="8" font-weight="700" font-family="JetBrains Mono">t${threadId}</text>`;
+        svg += `<text x="${x+30}" y="${y+32}" text-anchor="middle" fill="var(--text-muted)" font-size="7" font-family="JetBrains Mono">${dims}</text>`;
+        svg += `<text x="${x+30}" y="${y+44}" text-anchor="middle" fill="var(--accent-cyan)" font-size="6" font-family="JetBrains Mono">Σ e[i][k]·W[k][j]</text>`;
+    }
+    svg += `<text x="810" y="395" fill="var(--text-muted)" font-size="10">…</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 450');
+}
+
+
+function renderQKDotKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K4: qk_dot_kernel — scores[h][i][j] = Q[i]·K[j] / √d</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">3D Grid: (⌈T/256⌉, T, H=12)  ·  Block: 256 threads</text>`;
+
+    // 3D Grid Visualization
+    const gridX = 50, gridY = 70;
+    const numHeads = 6; // Show 6 of 12
+
+    for (let h = numHeads - 1; h >= 0; h--) {
+        const offsetX = h * 12;
+        const offsetY = -h * 8;
+        const alpha = 0.5 + (numHeads - h) * 0.08;
+
+        // Head slice
+        svg += `<g style="animation: fadeIn ${0.3 + h * 0.1}s ease both;">`;
+        for (let i = 0; i < 5; i++) {
+            for (let j = 0; j < 5; j++) {
+                const x = gridX + offsetX + j * 26;
+                const y = gridY + offsetY + i * 26;
+                const hue = 180 + h * 25;
+                svg += `<rect x="${x}" y="${y}" width="22" height="22" rx="3" fill="hsla(${hue},80%,60%,${0.08 + (i+j)*0.02})" stroke="hsla(${hue},80%,60%,0.3)" stroke-width="0.5"/>`;
+            }
+        }
+        svg += `<text x="${gridX + offsetX - 5}" y="${gridY + offsetY + 65}" fill="hsla(${180 + h * 25},80%,60%,0.8)" font-size="8" font-family="JetBrains Mono">h${h}</text>`;
+        svg += `</g>`;
+    }
+
+    // Axis labels
+    svg += `<text x="${gridX + 65}" y="${gridY + 150}" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="Inter">j (keys)</text>`;
+    svg += `<text x="${gridX - 20}" y="${gridY + 65}" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="Inter" transform="rotate(-90,${gridX - 20},${gridY + 65})">i (queries)</text>`;
+    svg += `<text x="${gridX + numHeads * 12 + 80}" y="${gridY - numHeads * 8 + 20}" fill="var(--text-muted)" font-size="9" font-family="Inter">H (heads)</text>`;
+
+    // Thread computation detail
+    const detailX = 300;
+    svg += `<rect x="${detailX}" y="65" width="550" height="170" rx="12" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.12)" stroke-width="1"/>`;
+    svg += `<text x="${detailX + 20}" y="90" fill="#fff" font-size="13" font-weight="700" font-family="Inter">Each Thread Computes One (h, i, j) Element</text>`;
+
+    // Index mapping
+    svg += `<text x="${detailX + 20}" y="115" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">j = blockIdx.x × 256 + threadIdx.x</text>`;
+    svg += `<text x="${detailX + 20}" y="132" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">i = blockIdx.y</text>`;
+    svg += `<text x="${detailX + 20}" y="149" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">h = blockIdx.z</text>`;
+
+    // Dot product formula
+    svg += `<rect x="${detailX + 20}" y="165" width="500" height="55" rx="8" fill="rgba(118,228,170,0.06)" stroke="rgba(118,228,170,0.15)" stroke-width="1"/>`;
+    svg += `<text x="${detailX + 270}" y="188" text-anchor="middle" fill="#fff" font-size="12" font-weight="600" font-family="JetBrains Mono">dot = Σ<tspan font-size="8" dy="-4">d=0..24</tspan><tspan dy="4"> Q[i][h·25+d] × K[j][h·25+d]</tspan></text>`;
+    svg += `<text x="${detailX + 270}" y="210" text-anchor="middle" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="JetBrains Mono">scores[h][i][j] = dot × scale    (scale = 1/√25 = 0.2)</text>`;
+
+    // Total parallelism
+    svg += `<rect x="60" y="255" width="790" height="45" rx="8" fill="rgba(180,125,255,0.05)" stroke="rgba(180,125,255,0.15)" stroke-width="1"/>`;
+    svg += `<text x="80" y="280" fill="var(--accent-purple)" font-size="10" font-weight="700" font-family="Inter">Total work:</text>`;
+    svg += `<text x="170" y="280" fill="var(--text-muted)" font-size="10" font-family="Inter">H × T × T = 12 × T² independent dot products, all computed in a single kernel launch</text>`;
+
+    // Head dimension split illustration
+    svg += `<rect x="60" y="320" width="790" height="85" rx="12" fill="rgba(255,224,102,0.03)" stroke="rgba(255,224,102,0.12)" stroke-width="1"/>`;
+    svg += `<text x="80" y="345" fill="var(--accent-yellow)" font-size="11" font-weight="700" font-family="Inter">Head Dimension Split: 300D → 12 heads × 25D</text>`;
+
+    const headWidth = 55;
+    for (let h = 0; h < 12; h++) {
+        const x = 80 + h * (headWidth + 5);
+        svg += `<rect x="${x}" y="360" width="${headWidth}" height="28" rx="4" fill="rgba(255,224,102,${0.06 + h * 0.02})" stroke="rgba(255,224,102,0.3)" stroke-width="0.5"/>`;
+        svg += `<text x="${x + headWidth/2}" y="${377}" text-anchor="middle" fill="var(--accent-yellow)" font-size="7" font-weight="600" font-family="JetBrains Mono">H${h}:25D</text>`;
+    }
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 420');
+}
+
+
+function renderSoftmaxKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K5: softmax_kernel — Row-wise Stable Softmax</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Grid: ⌈(H×T)/256⌉ blocks  ·  Each thread = one complete row</text>`;
+
+    // Thread-to-row mapping
+    svg += `<text x="80" y="80" fill="var(--accent-cyan)" font-size="11" font-weight="600" font-family="Inter">Thread Mapping</text>`;
+    svg += `<text x="80" y="100" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">idx = blockIdx.x × 256 + threadIdx.x</text>`;
+    svg += `<text x="80" y="117" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">h = idx / T    i = idx % T</text>`;
+
+    // Softmax pipeline visualization
+    const pipeY = 150;
+    const stages = [
+        { label: '1. Find Max', formula: 'mx = max(row[j])', color: '#ff4d8d', desc: 'Scan row for maximum' },
+        { label: '2. Subtract & Exp', formula: 'row[j] = exp(row[j] - mx)', color: '#ffab40', desc: 'Numerical stability' },
+        { label: '3. Sum', formula: 'sum = Σ row[j]', color: '#b47dff', desc: 'Accumulate exponentials' },
+        { label: '4. Normalize', formula: 'row[j] /= sum', color: '#76e4aa', desc: 'Final probabilities' }
+    ];
+
+    stages.forEach((stage, idx) => {
+        const x = 80 + idx * 200;
+        svg += `<g style="animation: fadeInUp 0.5s ease ${idx * 0.2}s both;">`;
+        svg += `<rect x="${x}" y="${pipeY}" width="175" height="80" rx="10" fill="${stage.color}08" stroke="${stage.color}44" stroke-width="1.5"/>`;
+        svg += `<text x="${x + 88}" y="${pipeY + 25}" text-anchor="middle" fill="${stage.color}" font-size="11" font-weight="700" font-family="Inter">${stage.label}</text>`;
+        svg += `<text x="${x + 88}" y="${pipeY + 48}" text-anchor="middle" fill="#fff" font-size="9" font-family="JetBrains Mono">${stage.formula}</text>`;
+        svg += `<text x="${x + 88}" y="${pipeY + 68}" text-anchor="middle" fill="var(--text-muted)" font-size="8" font-family="Inter">${stage.desc}</text>`;
+        svg += `</g>`;
+
+        if (idx < stages.length - 1) {
+            svg += `<path d="M${x + 180},${pipeY + 40} L${x + 195},${pipeY + 40}" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+        }
+    });
+
+    // Before and after visualization
+    const barY = 280;
+    svg += `<text x="160" y="${barY}" text-anchor="middle" fill="var(--accent-pink)" font-size="11" font-weight="600" font-family="Inter">Raw Scores (before softmax)</text>`;
+    const rawScores = [3.2, -1.5, 0.8, 5.1, -0.3, 2.1, 1.4, -2.0];
+    rawScores.forEach((val, j) => {
+        const x = 50 + j * 40;
+        const h = Math.abs(val) * 8;
+        const y = barY + 60 - (val > 0 ? h : 0);
+        svg += `<rect x="${x}" y="${y}" width="30" height="${h}" rx="3" fill="${val > 0 ? 'rgba(255,77,141,0.3)' : 'rgba(255,77,141,0.15)'}" stroke="rgba(255,77,141,0.4)" stroke-width="0.5">
+            <animate attributeName="height" from="0" to="${h}" dur="0.5s" fill="freeze" begin="${0.5 + j * 0.05}s"/>
+        </rect>`;
+        svg += `<text x="${x + 15}" y="${barY + 75}" text-anchor="middle" fill="var(--text-muted)" font-size="7" font-family="JetBrains Mono">${val.toFixed(1)}</text>`;
+    });
+
+    // Arrow between
+    svg += `<path d="M380,${barY + 40} L420,${barY + 40}" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="2" marker-end="url(#arrowWhite)"/>`;
+
+    svg += `<text x="640" y="${barY}" text-anchor="middle" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">Probabilities (after softmax)</text>`;
+    const softScores = [0.04, 0.00, 0.02, 0.85, 0.01, 0.04, 0.03, 0.00];
+    softScores.forEach((val, j) => {
+        const x = 500 + j * 40;
+        const h = val * 100;
+        svg += `<rect x="${x}" y="${barY + 60 - h}" width="30" height="${h}" rx="3" fill="rgba(118,228,170,${0.2 + val})" stroke="rgba(118,228,170,0.5)" stroke-width="0.5">
+            <animate attributeName="height" from="0" to="${h}" dur="0.8s" fill="freeze" begin="${1 + j * 0.05}s"/>
+        </rect>`;
+        svg += `<text x="${x + 15}" y="${barY + 75}" text-anchor="middle" fill="var(--text-muted)" font-size="7" font-family="JetBrains Mono">${val.toFixed(2)}</text>`;
+    });
+
+    // Sum = 1.0 annotation
+    svg += `<text x="640" y="${barY + 92}" text-anchor="middle" fill="var(--accent-green)" font-size="10" font-weight="600" font-family="JetBrains Mono">Σ = 1.00</text>`;
+
+    svg += `<defs><marker id="arrowWhite" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,255,255,0.5)"/></marker></defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+
+function renderAttnOutputKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K6: attn_output_kernel — Weighted Sum</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">3D Grid: (⌈d/32⌉, T, H=12)  ·  Block: 32 threads</text>`;
+
+    // Formula
+    svg += `<rect x="180" y="60" width="540" height="40" rx="8" fill="rgba(118,228,170,0.06)" stroke="rgba(118,228,170,0.15)" stroke-width="1"/>`;
+    svg += `<text x="450" y="85" text-anchor="middle" fill="#fff" font-size="13" font-weight="600" font-family="JetBrains Mono">out[i][h·25 + d] = Σ<tspan font-size="9" dy="-3">j</tspan><tspan dy="3"> attn[h][i][j] × V[j][h·25 + d]</tspan></text>`;
+
+    // 3D thread mapping
+    const mapX = 50, mapY = 125;
+    svg += `<text x="${mapX}" y="${mapY}" fill="var(--accent-cyan)" font-size="11" font-weight="600" font-family="Inter">Thread Index Mapping</text>`;
+    svg += `<text x="${mapX}" y="${mapY + 20}" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">dd = blockIdx.x × 32 + threadIdx.x  → sub-dimension within head</text>`;
+    svg += `<text x="${mapX}" y="${mapY + 37}" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">i  = blockIdx.y                     → query token index</text>`;
+    svg += `<text x="${mapX}" y="${mapY + 54}" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">h  = blockIdx.z                     → attention head</text>`;
+
+    // Visual representation
+    const vizY = 220;
+
+    // Attention weights row
+    svg += `<text x="80" y="${vizY}" fill="var(--accent-orange)" font-size="10" font-weight="600" font-family="Inter">attn[h][i][:]</text>`;
+    for (let j = 0; j < 8; j++) {
+        const x = 80 + j * 36;
+        const val = [0.02, 0.05, 0.40, 0.12, 0.01, 0.25, 0.10, 0.05][j];
+        svg += `<rect x="${x}" y="${vizY + 10}" width="30" height="24" rx="4" fill="rgba(255,171,64,${0.1 + val})" stroke="rgba(255,171,64,0.4)" stroke-width="0.6"/>`;
+        svg += `<text x="${x + 15}" y="${vizY + 26}" text-anchor="middle" fill="#fff" font-size="7" font-family="JetBrains Mono">${val.toFixed(2)}</text>`;
+    }
+    svg += `<text x="370" y="${vizY + 26}" fill="var(--text-muted)" font-size="10">…</text>`;
+
+    // Multiply symbol
+    svg += `<text x="420" y="${vizY + 30}" fill="#fff" font-size="20" font-weight="300">×</text>`;
+
+    // V matrix column
+    svg += `<text x="470" y="${vizY}" fill="var(--accent-purple)" font-size="10" font-weight="600" font-family="Inter">V[:][h·25+d]</text>`;
+    for (let j = 0; j < 8; j++) {
+        const x = 470;
+        const y = vizY + 10 + j * 28;
+        svg += `<rect x="${x}" y="${y}" width="30" height="22" rx="4" fill="rgba(180,125,255,${0.1 + j * 0.03})" stroke="rgba(180,125,255,0.3)" stroke-width="0.6"/>`;
+        svg += `<text x="${x + 15}" y="${y + 15}" text-anchor="middle" fill="#fff" font-size="7" font-family="JetBrains Mono">v${j}</text>`;
+    }
+
+    // = output
+    svg += `<text x="550" y="${vizY + 120}" fill="#fff" font-size="20" font-weight="300">=</text>`;
+    svg += `<rect x="590" y="${vizY + 100}" width="100" height="35" rx="8" fill="rgba(118,228,170,0.15)" stroke="rgba(118,228,170,0.4)" stroke-width="1.5"/>`;
+    svg += `<text x="640" y="${vizY + 122}" text-anchor="middle" fill="var(--accent-green)" font-size="11" font-weight="700" font-family="JetBrains Mono">out[i][d]</text>`;
+
+    // Why 32 threads
+    svg += `<rect x="50" y="420" width="800" height="40" rx="8" fill="rgba(255,224,102,0.04)" stroke="rgba(255,224,102,0.12)" stroke-width="1"/>`;
+    svg += `<text x="70" y="444" fill="var(--accent-yellow)" font-size="10" font-weight="700" font-family="Inter">Block size = 32</text>`;
+    svg += `<text x="190" y="444" fill="var(--text-muted)" font-size="10" font-family="Inter">Matches one warp exactly. HEAD_DIM=25 ≤ 32, so one warp covers all sub-dimensions per (i,h) pair.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 470');
+}
+
+
+function renderAverageHeadsKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K7: average_heads_kernel — Merge 12 Attention Heads</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">2D Grid: (⌈T/256⌉, T)  ·  Block: 256 threads</text>`;
+
+    // 12 head matrices flowing into one
+    const headStartX = 30;
+    const headStartY = 80;
+
+    for (let h = 0; h < 6; h++) {
+        const x = headStartX + h * 110;
+        const y = headStartY;
+        const hue = 180 + h * 30;
+
+        svg += `<g style="animation: fadeInUp 0.3s ease ${h * 0.1}s both;">`;
+        // Mini matrix
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 4; c++) {
+                svg += `<rect x="${x + c * 20}" y="${y + r * 20}" width="16" height="16" rx="2" fill="hsla(${hue},70%,60%,${0.1 + (r+c)*0.05})" stroke="hsla(${hue},70%,60%,0.3)" stroke-width="0.4"/>`;
+            }
+        }
+        svg += `<text x="${x + 38}" y="${y + 100}" text-anchor="middle" fill="hsla(${hue},70%,60%,0.8)" font-size="9" font-weight="600" font-family="JetBrains Mono">Head ${h}</text>`;
+        svg += `</g>`;
+    }
+    svg += `<text x="710" y="${headStartY + 45}" fill="var(--text-muted)" font-size="12" font-family="JetBrains Mono">… +6 more</text>`;
+
+    // Converging arrows
+    for (let h = 0; h < 6; h++) {
+        const x1 = headStartX + h * 110 + 38;
+        const y1 = headStartY + 110;
+        svg += `<path d="M${x1},${y1} Q${x1},${y1 + 30} 400,${y1 + 60}" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>`;
+    }
+
+    // Summation symbol
+    svg += `<circle cx="400" cy="${headStartY + 175}" r="20" fill="rgba(180,125,255,0.1)" stroke="rgba(180,125,255,0.4)" stroke-width="1.5"/>`;
+    svg += `<text x="400" y="${headStartY + 181}" text-anchor="middle" fill="var(--accent-purple)" font-size="18" font-weight="300">Σ</text>`;
+    svg += `<text x="430" y="${headStartY + 181}" fill="var(--accent-purple)" font-size="10" font-family="JetBrains Mono">/ 12</text>`;
+
+    // Output matrix
+    svg += `<path d="M400,${headStartY + 200} L400,${headStartY + 230}" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+
+    const outY = headStartY + 240;
+    svg += `<rect x="280" y="${outY}" width="240" height="80" rx="12" fill="rgba(118,228,170,0.06)" stroke="rgba(118,228,170,0.25)" stroke-width="1.5"/>`;
+    svg += `<text x="400" y="${outY + 30}" text-anchor="middle" fill="var(--accent-green)" font-size="13" font-weight="700" font-family="Inter">avg_attn[T × T]</text>`;
+    svg += `<text x="400" y="${outY + 50}" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">avg_attn[i][j] = (1/H) Σₕ attn[h][i][j]</text>`;
+
+    // Thread detail
+    svg += `<rect x="60" y="${outY + 100}" width="780" height="50" rx="8" fill="rgba(0,229,255,0.04)" stroke="rgba(0,229,255,0.12)" stroke-width="1"/>`;
+    svg += `<text x="80" y="${outY + 125}" fill="var(--accent-cyan)" font-size="10" font-family="JetBrains Mono">j = blockIdx.x × 256 + threadIdx.x    i = blockIdx.y</text>`;
+    svg += `<text x="80" y="${outY + 140}" fill="var(--text-muted)" font-size="9" font-family="Inter">Each thread: loops over 12 heads, sums, divides. No shared memory needed — simple element-wise average.</text>`;
+
+    svg += `<defs><marker id="arrowWhite" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,255,255,0.5)"/></marker></defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 480');
+}
+
+
+function renderDiagMeanKernel() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">K8: head_diag_mean_kernel — Per-Head Self-Attention Diagnostic</text>`;
+    svg += `<text x="450" y="44" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Grid: 12 blocks (one per head)  ·  Block: 256 threads</text>`;
+
+    // Attention matrix with diagonal highlighted
+    const matX = 80, matY = 70, cellSize = 28;
+    const matDim = 8;
+
+    svg += `<text x="${matX + matDim * cellSize / 2}" y="${matY - 10}" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-weight="600" font-family="Inter">attn[h][T×T] — Diagonal Elements</text>`;
+
+    for (let i = 0; i < matDim; i++) {
+        for (let j = 0; j < matDim; j++) {
+            const x = matX + j * cellSize;
+            const y = matY + i * cellSize;
+            const isDiag = i === j;
+            const fill = isDiag ? 'rgba(118,228,170,0.35)' : 'rgba(255,255,255,0.03)';
+            const stroke = isDiag ? 'rgba(118,228,170,0.7)' : 'rgba(255,255,255,0.06)';
+            const strokeW = isDiag ? 2 : 0.5;
+
+            svg += `<rect x="${x}" y="${y}" width="${cellSize - 4}" height="${cellSize - 4}" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}">`;
+            if (isDiag) {
+                svg += `<animate attributeName="fill-opacity" values="0.3;0.8;0.3" dur="1.5s" repeatCount="indefinite" begin="${i * 0.15}s"/>`;
+            }
+            svg += `</rect>`;
+
+            if (isDiag) {
+                svg += `<text x="${x + (cellSize - 4) / 2}" y="${y + (cellSize - 4) / 2 + 4}" text-anchor="middle" fill="var(--accent-green)" font-size="7" font-weight="700" font-family="JetBrains Mono">a[${i}][${i}]</text>`;
+            }
+        }
+    }
+
+    // Arrow to reduction
+    svg += `<path d="M${matX + matDim * cellSize + 20},${matY + matDim * cellSize / 2} L${matX + matDim * cellSize + 60},${matY + matDim * cellSize / 2}" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" marker-end="url(#arrowWhite)"/>`;
+
+    // Shared memory reduction
+    const redX = 370, redY = 80;
+    svg += `<rect x="${redX}" y="${redY}" width="350" height="200" rx="12" fill="rgba(255,171,64,0.04)" stroke="rgba(255,171,64,0.15)" stroke-width="1"/>`;
+    svg += `<text x="${redX + 175}" y="${redY + 25}" text-anchor="middle" fill="var(--accent-orange)" font-size="12" font-weight="700" font-family="Inter">Shared-Memory Parallel Reduction</text>`;
+
+    // Reduction tree inside
+    const treeLevels = [
+        [{x:390, w:35}, {x:430, w:35}, {x:470, w:35}, {x:510, w:35}, {x:550, w:35}, {x:590, w:35}, {x:630, w:35}, {x:670, w:35}],
+        [{x:405, w:50}, {x:485, w:50}, {x:565, w:50}, {x:645, w:50}],
+        [{x:440, w:70}, {x:600, w:70}],
+        [{x:510, w:90}]
+    ];
+    const treeY = [redY + 45, redY + 80, redY + 115, redY + 150];
+    const treeColors = ['rgba(255,171,64,0.15)', 'rgba(255,171,64,0.25)', 'rgba(255,171,64,0.35)', 'rgba(255,171,64,0.5)'];
+
+    treeLevels.forEach((level, li) => {
+        level.forEach((node) => {
+            svg += `<rect x="${node.x}" y="${treeY[li]}" width="${node.w}" height="22" rx="4" fill="${treeColors[li]}" stroke="rgba(255,171,64,0.4)" stroke-width="0.5">
+                <animate attributeName="fill-opacity" values="0.3;0.8;0.3" dur="1.5s" repeatCount="indefinite" begin="${li * 0.25}s"/>
+            </rect>`;
+        });
+        if (li < treeLevels.length - 1) {
+            const next = treeLevels[li + 1];
+            level.forEach((node, ni) => {
+                const pi = Math.floor(ni / 2);
+                if (pi < next.length) {
+                    svg += `<line x1="${node.x + node.w / 2}" y1="${treeY[li] + 22}" x2="${next[pi].x + next[pi].w / 2}" y2="${treeY[li + 1]}" stroke="rgba(255,171,64,0.25)" stroke-width="0.8"/>`;
+                }
+            });
+        }
+    });
+
+    // Result
+    svg += `<text x="${redX + 175}" y="${redY + 188}" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="JetBrains Mono">diag_mean[h] = sum / T</text>`;
+
+    // Per-head output bars
+    svg += `<text x="80" y="330" fill="var(--accent-green)" font-size="11" font-weight="600" font-family="Inter">Result: Average Self-Attention per Head</text>`;
+    const headVals = [0.42, 0.38, 0.55, 0.31, 0.47, 0.29, 0.51, 0.36, 0.44, 0.40, 0.33, 0.48];
+    headVals.forEach((val, h) => {
+        const x = 80 + h * 65;
+        const barH = val * 100;
+        svg += `<rect x="${x}" y="${410 - barH}" width="50" height="${barH}" rx="4" fill="rgba(118,228,170,${0.15 + val * 0.5})" stroke="rgba(118,228,170,0.4)" stroke-width="0.5">
+            <animate attributeName="height" from="0" to="${barH}" dur="0.8s" fill="freeze" begin="${h * 0.05}s"/>
+        </rect>`;
+        svg += `<text x="${x + 25}" y="425" text-anchor="middle" fill="var(--text-muted)" font-size="7" font-family="JetBrains Mono">H${h}</text>`;
+        svg += `<text x="${x + 25}" y="${405 - barH}" text-anchor="middle" fill="var(--accent-green)" font-size="7" font-weight="600" font-family="JetBrains Mono">${val.toFixed(2)}</text>`;
+    });
+
+    // Benefit callout
+    svg += `<rect x="80" y="440" width="740" height="35" rx="6" fill="rgba(0,229,255,0.04)" stroke="rgba(0,229,255,0.1)" stroke-width="1"/>`;
+    svg += `<text x="100" y="462" fill="var(--accent-cyan)" font-size="10" font-weight="700" font-family="Inter">💡 Benefit:</text>`;
+    svg += `<text x="180" y="462" fill="var(--text-muted)" font-size="10" font-family="Inter">Only 12 floats copied to host instead of H × T × T full score tensor — massive bandwidth savings.</text>`;
+
+    svg += `<defs><marker id="arrowWhite" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,255,255,0.5)"/></marker></defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 490');
+}
+
+
+function renderMemoryFlow() {
+    let svg = '';
+
+    svg += `<text x="450" y="25" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="Inter">Host ↔ Device Memory & Data Flow</text>`;
+
+    // CPU side
+    svg += `<rect x="30" y="55" width="240" height="420" rx="14" fill="rgba(255,171,64,0.03)" stroke="rgba(255,171,64,0.15)" stroke-width="1.5"/>`;
+    svg += `<text x="150" y="80" text-anchor="middle" fill="var(--accent-orange)" font-size="13" font-weight="800" font-family="Inter" letter-spacing="2">HOST (CPU)</text>`;
+
+    const cpuItems = [
+        { label: 'vocab[] AoS', size: '~600MB', y: 100, color: '#ffab40' },
+        { label: 'flat_vecs (pinned)', size: 'V×D×4B', y: 150, color: '#ffab40' },
+        { label: 'cov_flat (pinned)', size: '300²×4B', y: 200, color: '#ffab40' },
+        { label: 'W_Q, W_K', size: '300²×4B ea', y: 250, color: '#b47dff' },
+        { label: 'embeddings[]', size: 'T×300×4B', y: 300, color: '#76e4aa' },
+        { label: 'output[], attn[]', size: 'T×300, T×T', y: 350, color: '#76e4aa' },
+        { label: 'diag_mean[12]', size: '48 bytes', y: 400, color: '#00e5ff' },
+    ];
+
+    cpuItems.forEach(item => {
+        svg += `<rect x="45" y="${item.y}" width="210" height="35" rx="6" fill="${item.color}10" stroke="${item.color}33" stroke-width="0.8"/>`;
+        svg += `<text x="55" y="${item.y + 22}" fill="#fff" font-size="9" font-weight="600" font-family="JetBrains Mono">${item.label}</text>`;
+        svg += `<text x="245" y="${item.y + 22}" text-anchor="end" fill="var(--text-muted)" font-size="8" font-family="JetBrains Mono">${item.size}</text>`;
+    });
+
+    // GPU side
+    svg += `<rect x="530" y="55" width="340" height="420" rx="14" fill="rgba(0,229,255,0.03)" stroke="rgba(0,229,255,0.15)" stroke-width="1.5"/>`;
+    svg += `<text x="700" y="80" text-anchor="middle" fill="var(--accent-cyan)" font-size="13" font-weight="800" font-family="Inter" letter-spacing="2">DEVICE (GPU)</text>`;
+
+    const gpuItems = [
+        { label: 'd_vecs_row → d_vecs', size: 'V×D×4B', y: 100, color: '#00e5ff', note: 'transposed' },
+        { label: 'd_mean[300]', size: '1.2KB', y: 150, color: '#00e5ff', note: '' },
+        { label: 'd_cov[300×300]', size: '360KB', y: 200, color: '#00e5ff', note: '' },
+        { label: 'd_W_Q, d_W_K', size: '360KB ea', y: 250, color: '#b47dff', note: '' },
+        { label: 'd_embeddings, d_Q, d_K', size: 'T×300', y: 300, color: '#76e4aa', note: '' },
+        { label: 'd_head_scores', size: 'H×T²×4B', y: 350, color: '#ff4d8d', note: '~largest alloc' },
+        { label: 'd_output, d_attn_weights', size: 'T×300, T²', y: 400, color: '#76e4aa', note: '' },
+    ];
+
+    gpuItems.forEach(item => {
+        svg += `<rect x="545" y="${item.y}" width="310" height="35" rx="6" fill="${item.color}10" stroke="${item.color}33" stroke-width="0.8"/>`;
+        svg += `<text x="555" y="${item.y + 22}" fill="#fff" font-size="9" font-weight="600" font-family="JetBrains Mono">${item.label}</text>`;
+        svg += `<text x="845" y="${item.y + 22}" text-anchor="end" fill="var(--text-muted)" font-size="8" font-family="JetBrains Mono">${item.size}</text>`;
+        if (item.note) {
+            svg += `<text x="845" y="${item.y + 12}" text-anchor="end" fill="var(--accent-pink)" font-size="7" font-family="JetBrains Mono">${item.note}</text>`;
+        }
+    });
+
+    // Transfer arrows with labels
+    const transfers = [
+        { fromY: 115, toY: 115, label: 'H→D: vocab vecs', color: '#ffab40', dir: 'right' },
+        { fromY: 215, toY: 215, label: 'D→H: covariance', color: '#00e5ff', dir: 'left' },
+        { fromY: 265, toY: 265, label: 'H→D: W_Q, W_K', color: '#b47dff', dir: 'right' },
+        { fromY: 315, toY: 315, label: 'H→D: embeddings', color: '#76e4aa', dir: 'right' },
+        { fromY: 365, toY: 415, label: 'D→H: output, attn', color: '#76e4aa', dir: 'left' },
+        { fromY: 415, toY: 415, label: 'D→H: 48 bytes', color: '#00e5ff', dir: 'left' },
+    ];
+
+    transfers.forEach((t, idx) => {
+        const x1 = t.dir === 'right' ? 260 : 525;
+        const x2 = t.dir === 'right' ? 525 : 260;
+        const midX = (x1 + x2) / 2;
+        const midY = (t.fromY + t.toY) / 2;
+        const marker = t.dir === 'right' ? 'arrowRight' : 'arrowLeft';
+
+        svg += `<path d="M${x1},${t.fromY} C${midX},${t.fromY} ${midX},${t.toY} ${x2},${t.toY}" fill="none" stroke="${t.color}55" stroke-width="1.5" stroke-dasharray="5 3">
+            <animate attributeName="stroke-dashoffset" from="0" to="${t.dir === 'right' ? '-16' : '16'}" dur="1s" repeatCount="indefinite"/>
+        </path>`;
+
+        // Flowing dot
+        svg += `<circle r="3" fill="${t.color}">
+            <animateMotion path="M${x1 - x1},${t.fromY - t.fromY} C${midX - x1},${t.fromY - t.fromY} ${midX - x1},${t.toY - t.fromY} ${x2 - x1},${t.toY - t.fromY}" dur="2s" repeatCount="indefinite" begin="${idx * 0.3}s">
+            </animateMotion>
+        </circle>`;
+
+        svg += `<text x="${midX}" y="${midY - 8}" text-anchor="middle" fill="${t.color}" font-size="8" font-weight="600" font-family="JetBrains Mono">${t.label}</text>`;
+    });
+
+    // Pinned memory callout
+    svg += `<rect x="280" y="445" width="240" height="30" rx="6" fill="rgba(255,171,64,0.06)" stroke="rgba(255,171,64,0.15)" stroke-width="1"/>`;
+    svg += `<text x="400" y="464" text-anchor="middle" fill="var(--accent-orange)" font-size="9" font-weight="600" font-family="Inter">📌 cudaMallocHost for large transfers</text>`;
+
+    svg += `<defs>
+        <marker id="arrowRight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,255,255,0.5)"/></marker>
+        <marker id="arrowLeft" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto"><path d="M8,0 L0,3 L8,6" fill="rgba(255,255,255,0.5)"/></marker>
+    </defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 490');
+}
+
+</script>
+</body>
+</html>

@@ -192,6 +192,8 @@ int vocab_size = 0;
 float W_Q[EMBED_DIM][EMBED_DIM];
 float W_K[EMBED_DIM][EMBED_DIM];
 
+// Kernel to compute the mean vector of the vocabulary embeddings along each dimension.
+// Each block computes the mean for one dimension using parallel reduction.
 __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
     int d = blockIdx.x;
     if (d >= EMBED_DIM) return;
@@ -215,6 +217,8 @@ __global__ void compute_mean_kernel(const float *vecs, float *mean, int V) {
 }
 
 
+// Kernel to compute the covariance matrix of the embeddings.
+// Computes the upper triangular part (and mirrors it) to optimize memory and operations.
 __global__ void covariance_kernel(const float *vecs, const float *mean,
                                    float *cov, int V) {
     int pair_idx = (int)blockIdx.x;
@@ -251,6 +255,8 @@ __global__ void covariance_kernel(const float *vecs, const float *mean,
     }
 }
 
+// Kernel to transpose the vocabulary matrix (row-major to column-major).
+// Uses shared memory tiling to optimize memory coalescing during read/write.
 __global__ void transpose_vocab_kernel(const float *row_major, float *dim_major, int V) {
     __shared__ float tile[TRANSPOSE_TILE_DIM][TRANSPOSE_TILE_DIM + 1];
 
@@ -275,6 +281,7 @@ __global__ void transpose_vocab_kernel(const float *row_major, float *dim_major,
     }
 }
 
+// Kernel to project input embeddings into Query (Q) or Key (K) spaces using PCA weights.
 __global__ void project_kernel(const float *in, const float *W, float *out,
                                 int n_tokens) {
     int i = blockIdx.x;
@@ -289,6 +296,8 @@ __global__ void project_kernel(const float *in, const float *W, float *out,
 }
 
 
+// Kernel to compute the Q * K^T attention scores for all heads.
+// Results are scaled by 1/sqrt(HEAD_DIM) to stabilize gradients/softmax.
 __global__ void qk_dot_kernel(const float *Q, const float *K, float *scores,
                                int n_tokens, float scale) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -304,6 +313,8 @@ __global__ void qk_dot_kernel(const float *Q, const float *K, float *scores,
 }
 
 
+// Kernel to apply softmax over the attention scores for each token per head.
+// Ensures attention weights for each token sum to 1.
 __global__ void softmax_kernel(float *scores, int n_heads, int n_tokens) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int h = idx / n_tokens;
@@ -327,6 +338,8 @@ __global__ void softmax_kernel(float *scores, int n_heads, int n_tokens) {
 }
 
 
+// Kernel to compute the weighted sum of Value (V) vectors based on attention weights.
+// The input embeddings are used as the Value matrix in this implementation.
 __global__ void attn_output_kernel(const float *attn, const float *V_mat,
                                     float *out, int n_tokens) {
     int dd = blockIdx.x * blockDim.x + threadIdx.x;
@@ -343,6 +356,7 @@ __global__ void attn_output_kernel(const float *attn, const float *V_mat,
 }
 
 
+// Kernel to average the attention weight matrices across all heads.
 __global__ void average_heads_kernel(const float *head_attn, float *avg_attn,
                                       int n_tokens) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -356,6 +370,8 @@ __global__ void average_heads_kernel(const float *head_attn, float *avg_attn,
 }
 
 
+// Kernel to compute the average self-attention (diagonal of the attention matrix) for each head.
+// Useful for analyzing head specialization.
 __global__ void head_diag_mean_kernel(const float *head_attn, float *diag_mean,
                                       int n_tokens) {
     int h = blockIdx.x;
@@ -380,6 +396,7 @@ __global__ void head_diag_mean_kernel(const float *head_attn, float *diag_mean,
 }
 
 
+// CPU function to compute eigenvalues and eigenvectors of a symmetric matrix using Jacobi eigenvalue algorithm.
 void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
                   float V[EMBED_DIM][EMBED_DIM],
                   float d[EMBED_DIM],
@@ -455,6 +472,8 @@ void jacobi_eigen(float A[EMBED_DIM][EMBED_DIM],
     printf("  [jacobi] Done. Total floating-point ops: %lld\n", *op_count);
 }
 
+// Stage: Compute PCA projections (Q and K weight matrices) on GPU/CPU.
+// Calculates vocabulary covariance matrix, performs eigendecomposition, and builds projection matrices.
 void compute_pca_projections_cuda(double total_start) {
     printf("\n");
     print_separator('-', 60);
@@ -796,6 +815,8 @@ void add_positional_encoding(float embeddings[MAX_TOKENS][EMBED_DIM], int n_toke
     printf("  [pe] Done in %.6fs  ops: %lld\n", t1 - t0, ops);
 }
 
+// Stage: Perform multi-head self-attention on token embeddings using CUDA.
+// Executes Q/K projections, QK^T dot products, softmax, and context vector generation.
 void multihead_self_attention_cuda(float embeddings[MAX_TOKENS][EMBED_DIM],
                                     int n_tokens,
                                     float attn_weights[MAX_TOKENS][MAX_TOKENS],
@@ -927,6 +948,8 @@ float token_importance(float *output_vec) {
     return sqrtf(norm);
 }
 
+// Stage: Summarize text based on attention centrality.
+// Scores tokens based on total incoming attention, ranks sentences by average token score, and selects top sentences.
 void summarize(char tokens[MAX_TOKENS][MAX_WORD_LEN],
                int token_sentence[MAX_TOKENS],
                char sentences[MAX_SENTENCES][MAX_SENTENCE_LEN],

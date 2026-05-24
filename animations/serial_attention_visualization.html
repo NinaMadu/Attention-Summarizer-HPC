@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serial Attention Summarizer Visualization</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f111a;
+            --bg-panel: rgba(25, 28, 41, 0.7);
+            --accent-blue: #00f0ff;
+            --accent-purple: #b026ff;
+            --accent-green: #00ff88;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(176, 38, 255, 0.08), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(0, 240, 255, 0.08), transparent 25%);
+        }
+
+        /* Sidebar styling */
+        #sidebar {
+            width: 320px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(16px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 32px;
+        }
+
+        #steps-list {
+            list-style: none;
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .step-item {
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+        }
+
+        .step-item.active {
+            background: rgba(0, 240, 255, 0.1);
+            border-color: rgba(0, 240, 255, 0.3);
+            color: var(--accent-blue);
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.1);
+        }
+
+        .step-item.completed {
+            color: var(--text-main);
+        }
+
+        .step-item::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            margin-right: 12px;
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        /* Controls */
+        #controls {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+
+        button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #btn-next {
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            color: #fff;
+            border: none;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 15px rgba(176, 38, 255, 0.4);
+            background: linear-gradient(90deg, #1af4ff, #c24dff);
+        }
+
+        /* Main Stage */
+        #main-stage {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 40px;
+            position: relative;
+        }
+
+        #stage-header {
+            margin-bottom: 40px;
+            animation: fadeInDown 0.5s ease;
+        }
+
+        #stage-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+
+        #stage-desc {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            max-width: 800px;
+            line-height: 1.6;
+        }
+
+        #visualization-area {
+            flex-grow: 1;
+            background: rgba(0,0,0,0.2);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            box-shadow: inset 0 0 50px rgba(0,0,0,0.5);
+        }
+
+        /* Reusable Visualization Components */
+        .glass-box {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(8px);
+        }
+
+        .code-font {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Specific Step Styles */
+        /* Step 1 & 2: Vectors & PCA */
+        .matrix-grid {
+            display: grid;
+            gap: 2px;
+            opacity: 0;
+            transform: scale(0.9);
+            animation: fadeInScale 0.8s forwards cubic-bezier(0.1, 0.9, 0.2, 1);
+        }
+        
+        .cell {
+            background: rgba(255,255,255,0.05);
+            transition: all 0.3s ease;
+        }
+
+        /* Tokens */
+        .token-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        .token {
+            padding: 8px 16px;
+            background: rgba(0, 240, 255, 0.1);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            border-radius: 20px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            opacity: 0;
+            transform: translateY(20px);
+            animation: slideUpFade 0.5s forwards;
+        }
+
+        .sentence-box {
+            margin-bottom: 20px;
+            padding: 20px;
+            border-left: 4px solid var(--accent-purple);
+            background: linear-gradient(90deg, rgba(176,38,255,0.1), transparent);
+            border-radius: 0 12px 12px 0;
+            width: 100%;
+        }
+
+        /* QK Attention */
+        .attn-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+            width: 100%;
+            max-width: 600px;
+            aspect-ratio: 1;
+        }
+
+        .attn-cell {
+            background: rgba(255,255,255,0.05);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .attn-fill {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            background: linear-gradient(0deg, var(--accent-blue), var(--accent-purple));
+            height: 0%;
+            transition: height 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .head-container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .head-box {
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            animation: fadeIn 0.5s ease forwards;
+            opacity: 0;
+        }
+
+        /* Summary */
+        .highlight-text {
+            color: #fff;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+            font-weight: 600;
+        }
+        
+        .summary-result {
+            font-size: 1.4rem;
+            line-height: 1.8;
+            padding: 30px;
+            border-radius: 12px;
+            background: rgba(0, 255, 136, 0.05);
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            border-left: 6px solid var(--accent-green);
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUpFade {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        @keyframes pulseGlow {
+            0% { box-shadow: 0 0 0 rgba(0, 240, 255, 0); }
+            50% { box-shadow: 0 0 20px rgba(0, 240, 255, 0.5); }
+            100% { box-shadow: 0 0 0 rgba(0, 240, 255, 0); }
+        }
+
+        /* Layout utilities */
+        .flex-center { display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%; height: 100%; }
+        .row { display: flex; gap: 40px; align-items: center; width: 100%; justify-content: center; }
+        .arrow { font-size: 2rem; color: var(--text-muted); animation: pulseGlow 2s infinite; }
+        
+        /* Floating particles for bg */
+        #particles {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h1>Attention Summarizer</h1>
+        <ul id="steps-list">
+            <!-- Populated by JS -->
+        </ul>
+        <div id="controls">
+            <button id="btn-prev" disabled>Previous</button>
+            <button id="btn-next">Next</button>
+        </div>
+    </div>
+
+    <div id="main-stage">
+        <div id="particles"></div>
+        <div id="stage-header">
+            <h2 id="stage-title">Welcome</h2>
+            <p id="stage-desc">Click Next to begin the visualization of the serial attention summarizer algorithm.</p>
+        </div>
+        <div id="visualization-area">
+            <!-- Dynamic Content -->
+            <div class="flex-center" style="animation: fadeInScale 1s ease;">
+                <svg width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 16v-4"></path>
+                    <path d="M12 8h.01"></path>
+                </svg>
+                <h3 style="margin-top: 20px; font-weight: 300; letter-spacing: 2px;">SERIAL C IMPLEMENTATION</h3>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const steps = [
+            {
+                id: 'glove',
+                title: '1. GloVe Loading',
+                desc: 'The program starts by loading pre-trained 200-dimensional GloVe word embeddings from disk into memory. This creates a vocabulary mapping words to dense float vectors.',
+                render: renderGloveLoading
+            },
+            {
+                id: 'pca',
+                title: '2. PCA & Whitening',
+                desc: 'A Covariance Matrix is built from the vocabulary. The Jacobi Eigenvalue algorithm extracts eigenvalues and eigenvectors. Finally, Projection Matrices (W_Q, W_K) are built, scaled by the inverse square root of eigenvalues to whiten the data.',
+                render: renderPCA
+            },
+            {
+                id: 'tokenization',
+                title: '3. Input & Tokenization',
+                desc: 'The input paragraph is split into sentences based on punctuation, and then into individual word tokens. Punctuation is removed and everything is lowercased.',
+                render: renderTokenization
+            },
+            {
+                id: 'vectorize',
+                title: '4. Vectorization & Positional Encoding',
+                desc: 'Tokens are mapped to their 200D GloVe vectors. Then, sine and cosine waves of varying frequencies are added to inject positional information (order of words).',
+                render: renderVectorization
+            },
+            {
+                id: 'projection',
+                title: '5. Q & K Projections',
+                desc: 'Each token vector is multiplied by the W_Q and W_K matrices calculated during the PCA step. This transforms the embeddings into Query and Key spaces.',
+                render: renderProjections
+            },
+            {
+                id: 'multihead',
+                title: '6. Multi-Head Self-Attention',
+                desc: 'The 200D Q and K vectors are conceptually split into 8 heads (25D each). For each head, we compute Q * K^T / sqrt(25), apply Softmax to get attention weights, and multiply by the original embeddings (V). Finally, all 8 attention matrices are averaged.',
+                render: renderMultiHead
+            },
+            {
+                id: 'topwords',
+                title: '7. Token Importance (Top Words)',
+                desc: 'To find the most important concepts, we calculate the L2 Norm (Euclidean length) of the final attention output vector for each token. Stopwords are filtered out.',
+                render: renderTopWords
+            },
+            {
+                id: 'scoring',
+                title: '8. Token Centrality & Sentence Scoring',
+                desc: 'Token Centrality is calculated by summing the incoming attention weights for each token. Sentence scores are then computed by averaging the centrality of the tokens they contain.',
+                render: renderScoring
+            },
+            {
+                id: 'summary',
+                title: '9. Summary Extraction',
+                desc: 'The sentences with the highest average token centrality are selected and concatenated to form the final extractive summary.',
+                render: renderSummary
+            }
+        ];
+
+        let currentStep = -1;
+        
+        // DOM Elements
+        const listEl = document.getElementById('steps-list');
+        const titleEl = document.getElementById('stage-title');
+        const descEl = document.getElementById('stage-desc');
+        const visEl = document.getElementById('visualization-area');
+        const btnPrev = document.getElementById('btn-prev');
+        const btnNext = document.getElementById('btn-next');
+
+        // Initialize Sidebar
+        steps.forEach((step, idx) => {
+            const li = document.createElement('li');
+            li.className = 'step-item';
+            li.innerText = step.title;
+            li.onclick = () => goToStep(idx);
+            listEl.appendChild(li);
+        });
+
+        function updateSidebar() {
+            const items = listEl.querySelectorAll('li');
+            items.forEach((li, idx) => {
+                li.classList.remove('active', 'completed');
+                if (idx === currentStep) li.classList.add('active');
+                else if (idx < currentStep) li.classList.add('completed');
+            });
+        }
+
+        function updateControls() {
+            btnPrev.disabled = currentStep < 0;
+            btnNext.innerText = currentStep === steps.length - 1 ? 'Finish' : 'Next';
+            btnNext.disabled = currentStep === steps.length - 1;
+        }
+
+        function goToStep(idx) {
+            if (idx < 0 || idx >= steps.length) return;
+            currentStep = idx;
+            
+            // Animate out
+            visEl.style.opacity = '0';
+            document.getElementById('stage-header').style.opacity = '0';
+            
+            setTimeout(() => {
+                const step = steps[idx];
+                titleEl.innerText = step.title;
+                descEl.innerText = step.desc;
+                visEl.innerHTML = '';
+                
+                // Render new content
+                step.render();
+                
+                // Animate in
+                visEl.style.opacity = '1';
+                document.getElementById('stage-header').style.opacity = '1';
+                document.getElementById('stage-header').style.animation = 'none';
+                void document.getElementById('stage-header').offsetWidth; // trigger reflow
+                document.getElementById('stage-header').style.animation = 'fadeInDown 0.5s ease';
+                
+                updateSidebar();
+                updateControls();
+            }, 300);
+        }
+
+        btnPrev.addEventListener('click', () => goToStep(currentStep - 1));
+        btnNext.addEventListener('click', () => {
+            if(currentStep === -1) goToStep(0);
+            else goToStep(currentStep + 1);
+        });
+
+        // --- Render Functions for each step ---
+
+        function renderGloveLoading() {
+            const html = `
+                <div class="flex-center code-font">
+                    <div style="font-size: 1.5rem; color: var(--accent-green); margin-bottom: 20px;">Reading glove.6B.200d.txt...</div>
+                    <div class="glass-box" style="width: 100%; max-width: 600px; height: 300px; overflow: hidden; position: relative;" id="glove-console">
+                    </div>
+                </div>
+            `;
+            visEl.innerHTML = html;
+            const consoleEl = document.getElementById('glove-console');
+            
+            const words = ['the', 'of', 'to', 'and', 'in', 'science', 'computer', 'quantum', 'intelligence', 'artificial', 'hpc', 'cuda'];
+            let count = 0;
+            
+            const interval = setInterval(() => {
+                if(count > 20 || document.getElementById('glove-console') === null) {
+                    clearInterval(interval);
+                    if(consoleEl) {
+                        consoleEl.innerHTML += `<div style="color: var(--accent-blue); margin-top: 10px;">> Successfully loaded 400,000 vectors. Memory allocated.</div>`;
+                    }
+                    return;
+                }
+                const word = words[count % words.length];
+                const vec = Array.from({length: 5}, () => (Math.random() * 2 - 1).toFixed(4)).join(' ... ');
+                const line = document.createElement('div');
+                line.style.color = '#fff';
+                line.style.opacity = '0';
+                line.style.animation = 'slideUpFade 0.2s forwards';
+                line.innerText = `> vocab[${1000 + count}]: "${word}" -> [ ${vec} ]`;
+                consoleEl.appendChild(line);
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+                count++;
+            }, 100);
+        }
+
+        function renderPCA() {
+            visEl.innerHTML = `
+                <div class="row">
+                    <div class="glass-box flex-center" style="width: 250px; height: 250px;">
+                        <div style="font-size: 4rem; color: var(--accent-blue);">∑</div>
+                        <h4 style="margin-top: 10px;">Covariance Matrix</h4>
+                        <div class="code-font" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 10px;">200x200 Elements</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="glass-box flex-center" style="width: 250px; height: 250px; border-color: rgba(176, 38, 255, 0.5);">
+                        <h4 style="color: var(--accent-purple); margin-bottom: 10px;">Jacobi Eigen</h4>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">100 Sweeps<br/>Extracting Eigenvectors (V)<br/>and Eigenvalues (λ)</div>
+                        <div id="eigen-values" class="code-font" style="margin-top: 15px; font-size: 0.75rem; color: #fff;"></div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="glass-box flex-center" style="width: 250px; height: 250px; background: rgba(0, 240, 255, 0.05);">
+                        <h4 style="color: var(--accent-blue); margin-bottom: 10px;">Whitening Matrices</h4>
+                        <div class="code-font" style="font-size: 1.2rem; margin-bottom: 10px;">W_Q, W_K</div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">Scaled by 1/sqrt(λ)</div>
+                    </div>
+                </div>
+            `;
+            
+            setTimeout(() => {
+                const ev = document.getElementById('eigen-values');
+                if(!ev) return;
+                ev.innerHTML = `λ0 = 12.453<br/>λ1 = 9.812<br/>λ2 = 7.104<br/>...`;
+                ev.style.animation = 'fadeIn 1s forwards';
+            }, 1000);
+        }
+
+        function renderTokenization() {
+            const rawText = "High performance computing is essential. It enables complex AI models like transformers. The self-attention mechanism processes tokens in parallel.";
+            
+            visEl.innerHTML = `
+                <div class="flex-center" style="width: 100%; align-items: stretch; max-width: 800px;">
+                    <div class="glass-box" style="margin-bottom: 30px;">
+                        <h4 style="margin-bottom: 10px; color: var(--text-muted);">Raw Input</h4>
+                        <div style="font-size: 1.2rem; line-height: 1.5;">${rawText}</div>
+                    </div>
+                    <div id="sentences-area"></div>
+                </div>
+            `;
+            
+            const area = document.getElementById('sentences-area');
+            const sentences = [
+                "high performance computing is essential",
+                "it enables complex ai models like transformers",
+                "the self attention mechanism processes tokens in parallel"
+            ];
+            
+            sentences.forEach((s, i) => {
+                setTimeout(() => {
+                    if(!document.getElementById('sentences-area')) return;
+                    const tokens = s.split(' ');
+                    let tokensHtml = tokens.map((t, tid) => `<div class="token" style="animation-delay: ${tid * 0.1}s">${t}</div>`).join('');
+                    
+                    area.innerHTML += `
+                        <div class="sentence-box" style="animation: fadeInScale 0.5s forwards;">
+                            <div style="font-size: 0.8rem; color: var(--accent-purple); margin-bottom: 10px; font-weight: bold;">Sentence ${i}</div>
+                            <div class="token-container">${tokensHtml}</div>
+                        </div>
+                    `;
+                }, (i + 1) * 800);
+            });
+        }
+
+        function renderVectorization() {
+            visEl.innerHTML = `
+                <div class="row">
+                    <div class="glass-box flex-center" style="width: 300px;">
+                        <div class="token" style="opacity:1; transform:none; animation:none; font-size: 1.2rem;">computing</div>
+                        <div style="margin: 20px 0; color: var(--text-muted);">GloVe Lookup</div>
+                        <div class="code-font" style="font-size: 0.8rem; text-align: center; color: var(--accent-blue);">
+                            [ 0.12, -0.45, 0.88, ... ]<br>200 Dimensions
+                        </div>
+                    </div>
+                    <div style="font-size: 3rem; color: var(--accent-purple);">+</div>
+                    <div class="glass-box flex-center" style="width: 300px; border-color: rgba(176, 38, 255, 0.3);">
+                        <h4 style="color: var(--accent-purple);">Positional Encoding</h4>
+                        <div style="width: 100%; height: 100px; position: relative; margin-top: 20px;">
+                            <svg width="100%" height="100%" viewBox="0 0 100 50" preserveAspectRatio="none">
+                                <path d="M0,25 Q12.5,0 25,25 T50,25 T75,25 T100,25" fill="none" stroke="var(--accent-purple)" stroke-width="2">
+                                    <animate attributeName="d" values="M0,25 Q12.5,0 25,25 T50,25 T75,25 T100,25; M0,25 Q12.5,50 25,25 T50,25 T75,25 T100,25; M0,25 Q12.5,0 25,25 T50,25 T75,25 T100,25" dur="2s" repeatCount="indefinite" />
+                                </path>
+                                <path d="M0,25 Q12.5,50 25,25 T50,25 T75,25 T100,25" fill="none" stroke="var(--accent-blue)" stroke-width="2" opacity="0.5">
+                                    <animate attributeName="d" values="M0,25 Q12.5,50 25,25 T50,25 T75,25 T100,25; M0,25 Q12.5,0 25,25 T50,25 T75,25 T100,25; M0,25 Q12.5,50 25,25 T50,25 T75,25 T100,25" dur="3s" repeatCount="indefinite" />
+                                </path>
+                            </svg>
+                        </div>
+                        <div class="code-font" style="font-size: 0.75rem; margin-top: 10px; color: var(--text-muted);">sin(pos / 10000^(2i/d))</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderProjections() {
+            visEl.innerHTML = `
+                <div class="flex-center">
+                    <div class="row" style="margin-bottom: 50px;">
+                        <div class="token" style="opacity:1; transform:none; animation:none; font-size: 1.5rem; padding: 15px 30px;">Embeddings (N x 200)</div>
+                    </div>
+                    <div class="row">
+                        <div class="glass-box flex-center" style="width: 250px; position: relative;">
+                            <div style="position:absolute; top:-30px; color: var(--accent-blue);" class="arrow">↙</div>
+                            <div class="code-font" style="font-size: 1.5rem; color: var(--accent-blue); margin-bottom: 10px;">× W_Q</div>
+                            <h3 style="color: #fff;">Query (Q)</h3>
+                            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 10px;">N x 200</div>
+                        </div>
+                        <div class="glass-box flex-center" style="width: 250px; position: relative;">
+                            <div style="position:absolute; top:-30px; color: var(--accent-purple);" class="arrow">↘</div>
+                            <div class="code-font" style="font-size: 1.5rem; color: var(--accent-purple); margin-bottom: 10px;">× W_K</div>
+                            <h3 style="color: #fff;">Key (K)</h3>
+                            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 10px;">N x 200</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderMultiHead() {
+            let headsHtml = '';
+            for(let i=0; i<8; i++) {
+                headsHtml += `
+                    <div class="head-box" style="animation-delay: ${i*0.1}s">
+                        <div style="color: #fff; font-weight: bold; margin-bottom: 5px;">Head ${i+1}</div>
+                        <div style="width: 40px; height: 40px; background: rgba(0, 240, 255, 0.2); margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;">
+                            ${Array(9).fill('<div style="background: rgba(255,255,255,0.2);"></div>').join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            visEl.innerHTML = `
+                <div class="flex-center">
+                    <div class="head-container" style="margin-bottom: 40px;">
+                        ${headsHtml}
+                    </div>
+                    
+                    <div class="glass-box flex-center" style="width: 100%; max-width: 700px; padding: 30px;">
+                        <h3 style="color: var(--accent-blue); margin-bottom: 20px;">Operation per Head (Dimension = 25)</h3>
+                        <div class="code-font row" style="font-size: 1.2rem;">
+                            <div>Softmax(</div>
+                            <div style="text-align: center;">
+                                <div style="border-bottom: 1px solid #fff; padding-bottom: 5px; margin-bottom: 5px;">Q<sub>h</sub> × K<sub>h</sub><sup>T</sup></div>
+                                <div>√25</div>
+                            </div>
+                            <div>)</div>
+                            <div style="color: var(--accent-purple);">× V (Original)</div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 30px; color: var(--accent-green); font-weight: bold; opacity: 0; animation: fadeIn 1s 1.5s forwards;">
+                        ↓ Average all 8 outputs ↓
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTopWords() {
+            visEl.innerHTML = `
+                <div class="flex-center">
+                    <h3 style="margin-bottom: 30px;">Computing Token L2 Norm from V<sub>output</sub></h3>
+                    <div class="glass-box" style="width: 100%; max-width: 600px;">
+                        <div style="display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-weight: bold;">
+                            <span>Token</span><span>L2 Norm Score</span>
+                        </div>
+                        <div id="word-list"></div>
+                    </div>
+                </div>
+            `;
+            
+            const words = [
+                {w: 'parallel', s: 15.42},
+                {w: 'transformers', s: 14.89},
+                {w: 'computing', s: 12.31},
+                {w: 'attention', s: 11.05},
+                {w: 'models', s: 9.88}
+            ];
+            
+            const list = document.getElementById('word-list');
+            words.forEach((item, i) => {
+                setTimeout(() => {
+                    if(!document.getElementById('word-list')) return;
+                    const w = Math.round((item.s / 16) * 100);
+                    list.innerHTML += `
+                        <div style="display: flex; align-items: center; padding: 12px 10px; opacity: 0; animation: slideUpFade 0.3s forwards;">
+                            <div style="width: 120px; font-weight: 600; color: #fff;">${item.w}</div>
+                            <div style="flex-grow: 1; height: 12px; background: rgba(255,255,255,0.1); border-radius: 6px; overflow: hidden; margin-right: 20px;">
+                                <div style="width: ${w}%; height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple)); border-radius: 6px;"></div>
+                            </div>
+                            <div class="code-font" style="width: 60px; text-align: right; color: var(--accent-blue);">${item.s}</div>
+                        </div>
+                    `;
+                }, (i+1) * 400);
+            });
+        }
+
+        function renderScoring() {
+            visEl.innerHTML = `
+                <div class="row">
+                    <div class="glass-box flex-center" style="width: 350px;">
+                        <h4 style="color: var(--accent-blue); margin-bottom: 20px;">Token Centrality</h4>
+                        <div style="text-align: left; width: 100%; font-size: 0.9rem;">
+                            Summing columns in Attention Matrix:
+                            <br><br>
+                            <span style="color:#fff">attention</span> = 0.85<br>
+                            <span style="color:#fff">mechanism</span> = 0.92<br>
+                            <span style="color:#fff">parallel</span> = 1.15
+                        </div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="glass-box flex-center" style="width: 350px; border-color: rgba(0, 255, 136, 0.4);">
+                        <h4 style="color: var(--accent-green); margin-bottom: 20px;">Sentence Score</h4>
+                        <div style="font-size: 2rem; color: #fff; font-weight: bold; margin-bottom: 10px;">∑ (Centrality)</div>
+                        <div style="border-top: 2px solid #fff; width: 150px; text-align: center; padding-top: 5px; margin-bottom: 10px;">Token Count</div>
+                        <div style="color: var(--accent-green); font-weight: 600;">Average Importance</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSummary() {
+            visEl.innerHTML = `
+                <div class="flex-center">
+                    <h2 style="margin-bottom: 40px; color: var(--accent-green); text-shadow: 0 0 20px rgba(0,255,136,0.3);">Final Extracted Summary</h2>
+                    <div class="summary-result" style="max-width: 800px; opacity: 0; animation: slideUpFade 1s forwards cubic-bezier(0.1, 0.9, 0.2, 1);">
+                        <span class="highlight-text">It enables complex AI models like transformers.</span>
+                        <br><br>
+                        <span class="highlight-text">The self attention mechanism processes tokens in parallel.</span>
+                    </div>
+                    <div style="margin-top: 40px; color: var(--text-muted); font-size: 0.9rem; animation: fadeIn 2s forwards;">
+                        Ranked Top 2 sentences based on overall attention centrality.
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Setup initial state (do not show first step immediately to allow welcome screen)
+        // btnNext click will trigger step 0.
+
+    </script>
+</body>
+</html>

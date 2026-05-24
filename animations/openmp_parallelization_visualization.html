@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenMP Parallelization Visualization — Attention Summarizer</title>
+    <meta name="description" content="Interactive visualization of OpenMP CPU parallelization strategies used in the Attention Summarizer HPC project.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0c14;
+            --bg-panel: rgba(18, 22, 36, 0.85);
+            --accent-green: #76e4aa;
+            --accent-cyan: #00e5ff;
+            --accent-purple: #b47dff;
+            --accent-orange: #ffab40;
+            --accent-pink: #ff4d8d;
+            --accent-yellow: #ffe066;
+            --accent-blue: #4da6ff;
+            --text-main: #e2e8f0;
+            --text-muted: #7e8aa0;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --glass: rgba(255,255,255,0.03);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            background-image:
+                radial-gradient(ellipse at 10% 80%, rgba(77, 166, 255, 0.06), transparent 40%),
+                radial-gradient(ellipse at 90% 20%, rgba(255, 171, 64, 0.06), transparent 40%),
+                radial-gradient(ellipse at 50% 50%, rgba(180, 125, 255, 0.04), transparent 50%);
+        }
+
+        /* ─── Sidebar ─── */
+        #sidebar {
+            width: 340px;
+            min-width: 340px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            z-index: 10;
+        }
+
+        #sidebar-header {
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 1rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-orange));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        #sidebar-subtitle {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #steps-list {
+            list-style: none;
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+            margin-top: 16px;
+        }
+        #steps-list::-webkit-scrollbar { width: 4px; }
+        #steps-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+        .step-item {
+            padding: 10px 14px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-item:hover { background: rgba(255,255,255,0.04); }
+        .step-item.active {
+            background: rgba(77, 166, 255, 0.08);
+            border-color: rgba(77, 166, 255, 0.25);
+            color: var(--accent-blue);
+            box-shadow: 0 0 20px rgba(77, 166, 255, 0.08);
+        }
+        .step-item.completed { color: var(--text-main); }
+        .step-item .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+            box-shadow: 0 0 6px currentColor;
+        }
+        .step-item .badge {
+            margin-left: auto;
+            font-size: 0.6rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-omp { background: rgba(77, 166, 255, 0.15); color: var(--accent-blue); }
+        .badge-serial { background: rgba(255, 171, 64, 0.15); color: var(--accent-orange); }
+        .badge-sync { background: rgba(180, 125, 255, 0.15); color: var(--accent-purple); }
+
+        /* Controls */
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+        }
+        button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+        button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btn-next {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            color: #0a0c14;
+            border: none;
+            font-weight: 800;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 20px rgba(77, 166, 255, 0.3);
+            filter: brightness(1.1);
+        }
+
+        /* ─── Main Stage ─── */
+        #main-stage {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 32px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #stage-header {
+            margin-bottom: 24px;
+            transition: opacity 0.3s;
+        }
+        #stage-title {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        #stage-desc {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            max-width: 900px;
+            line-height: 1.65;
+        }
+
+        #visualization-area {
+            flex-grow: 1;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.4);
+            transition: opacity 0.3s;
+        }
+
+        /* ─── Reusable Components ─── */
+        .flex-center { display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%; height: 100%; }
+
+        /* SVG Canvas */
+        .viz-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.92); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes dataFlow {
+            0% { stroke-dashoffset: 0; }
+            100% { stroke-dashoffset: -20; }
+        }
+        @keyframes threadWork {
+            0% { opacity: 0.3; }
+            50% { opacity: 1; }
+            100% { opacity: 0.3; }
+        }
+        @keyframes threadSpawn {
+            from { stroke-dasharray: 0, 100; opacity: 0; }
+            to { stroke-dasharray: 100, 0; opacity: 1; }
+        }
+
+        /* Welcome Hero */
+        .hero-cpu {
+            perspective: 600px;
+        }
+        .hero-cpu .chip {
+            width: 160px; height: 160px;
+            background: linear-gradient(135deg, rgba(77,166,255,0.15), rgba(255,171,64,0.15));
+            border: 1px solid rgba(77,166,255,0.3);
+            border-radius: 16px;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            grid-template-rows: repeat(4, 1fr);
+            gap: 6px;
+            padding: 12px;
+            animation: fadeInScale 1s ease;
+        }
+        .hero-cpu .core {
+            background: rgba(77,166,255,0.3);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid rgba(77,166,255,0.2);
+        }
+        .hero-cpu .core::after {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%; width: 50%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            animation: threadWork 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>OpenMP Parallelization</h1>
+            <div id="sidebar-subtitle">Attention Summarizer CPU Pipeline</div>
+        </div>
+        <ul id="steps-list"></ul>
+        <div id="controls">
+            <button id="btn-prev" disabled>◂ Prev</button>
+            <button id="btn-next">Next ▸</button>
+        </div>
+    </div>
+
+    <div id="main-stage">
+        <div id="stage-header">
+            <h2 id="stage-title">CPU Multi-Threading Pipeline</h2>
+            <p id="stage-desc">Explore how the Attention Summarizer distributes workload across multiple CPU cores using OpenMP pragmas. Click <strong>Next</strong> to walk through each parallelization stage.</p>
+        </div>
+        <div id="visualization-area">
+            <div class="flex-center">
+                <div class="hero-cpu">
+                    <div class="chip" id="hero-chip"></div>
+                </div>
+                <h3 style="margin-top:24px; font-weight:300; letter-spacing:3px; text-transform:uppercase; font-size:0.9rem; color:var(--text-muted);">
+                    OpenMP Thread Pool
+                </h3>
+                <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted);">
+                    Fork-Join Model · Shared Memory · Dynamic/Static Scheduling
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// Initialize hero chip
+(() => {
+    const chip = document.getElementById('hero-chip');
+    for (let i = 0; i < 8; i++) {
+        const core = document.createElement('div');
+        core.className = 'core';
+        core.style.animationDelay = `${i * 0.15}s`;
+        chip.appendChild(core);
+    }
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   STEP DEFINITIONS
+   ═══════════════════════════════════════════════════════════════════ */
+const steps = [
+    {
+        title: 'OpenMP Fork-Join Model',
+        badge: 'omp',
+        desc: 'OpenMP uses a fork-join execution model. The master thread executes sequentially until it encounters a `#pragma omp parallel` directive, which forks a team of threads to execute the block in parallel. At the end of the parallel block, threads join back into the master thread.',
+        render: renderForkJoin
+    },
+    {
+        title: 'Covariance: Thread Local',
+        badge: 'omp',
+        desc: 'Computing the covariance matrix is O(V × D²). To prevent thread contention on the global matrix, each thread computes a partial covariance matrix (`local_cov`) on a chunk of the vocabulary. The `nowait` clause allows threads to finish chunks independently.',
+        render: renderCovarianceLocal
+    },
+    {
+        title: 'Covariance: Critical Reduction',
+        badge: 'sync',
+        desc: 'After a thread finishes computing its `local_cov`, it enters a `#pragma omp critical` section to safely accumulate its partial results into the global `cov` matrix. This ensures no race conditions while avoiding the massive memory overhead of a pure OpenMP reduction on a large matrix.',
+        render: renderCovarianceCritical
+    },
+    {
+        title: 'Jacobi Eigen (Serial)',
+        badge: 'serial',
+        desc: 'The Eigendecomposition phase uses Jacobi rotations, which have strict loop-carried data dependencies (each rotation modifies rows/cols used by subsequent rotations). Thus, it is executed sequentially by the master thread without OpenMP.',
+        render: renderJacobiSerial
+    },
+    {
+        title: 'PCA Projections (Collapse)',
+        badge: 'omp',
+        desc: 'When building W_Q and W_K matrices, OpenMP uses `#pragma omp parallel for collapse(2)` to flatten the 2D loop over D×D into a single loop of size D², allowing for much finer-grained load balancing among the threads.',
+        render: renderCollapse
+    },
+    {
+        title: 'Vectorize (Dynamic)',
+        badge: 'omp',
+        desc: 'Looking up tokens in the vocabulary is O(T × V). Because some tokens are found early and others late, iteration times vary wildly. `#pragma omp parallel for schedule(dynamic, 4)` is used to dynamically assign small chunks (size 4) to threads as they become available, optimizing load balance.',
+        render: renderDynamicSchedule
+    },
+    {
+        title: 'Positional Encoding (Static)',
+        badge: 'omp',
+        desc: 'Positional encoding involves consistent mathematical operations (sin/cos) for every dimension. Since the workload per iteration is identical, `#pragma omp parallel for schedule(static)` assigns fixed, equal-sized chunks to each thread upfront with minimal overhead.',
+        render: renderStaticSchedule
+    },
+    {
+        title: 'Attention Dot Products',
+        badge: 'omp',
+        desc: 'Multi-head self-attention relies heavily on matrix multiplications. OpenMP parallelizes the nested loops using `collapse(2)` and `reduction(+:local_ops)`. Threads compute elements of the score matrix QK^T simultaneously across tokens and heads.',
+        render: renderAttentionOMP
+    }
+];
+
+let currentStep = -1;
+const listEl = document.getElementById('steps-list');
+const titleEl = document.getElementById('stage-title');
+const descEl = document.getElementById('stage-desc');
+const visEl = document.getElementById('visualization-area');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+
+steps.forEach((step, idx) => {
+    const li = document.createElement('li');
+    li.className = 'step-item';
+    li.innerHTML = `<span class="dot"></span><span>${step.title}</span><span class="badge badge-${step.badge}">${step.badge}</span>`;
+    li.onclick = () => goToStep(idx);
+    listEl.appendChild(li);
+});
+
+function goToStep(idx) {
+    if (idx < 0 || idx >= steps.length) return;
+    currentStep = idx;
+    visEl.style.opacity = '0';
+    document.getElementById('stage-header').style.opacity = '0';
+    setTimeout(() => {
+        const step = steps[idx];
+        titleEl.innerText = step.title;
+        descEl.innerHTML = step.desc;
+        visEl.innerHTML = '';
+        step.render();
+        visEl.style.opacity = '1';
+        const header = document.getElementById('stage-header');
+        header.style.opacity = '1';
+        header.style.animation = 'none';
+        void header.offsetWidth;
+        header.style.animation = 'fadeInUp 0.5s ease';
+        updateSidebar();
+        updateControls();
+    }, 300);
+}
+
+function updateSidebar() {
+    listEl.querySelectorAll('li').forEach((li, idx) => {
+        li.classList.remove('active', 'completed');
+        if (idx === currentStep) li.classList.add('active');
+        else if (idx < currentStep) li.classList.add('completed');
+    });
+}
+
+function updateControls() {
+    btnPrev.disabled = currentStep < 0;
+    btnNext.disabled = currentStep === steps.length - 1;
+    btnNext.innerText = currentStep === steps.length - 1 ? 'Done' : 'Next ▸';
+}
+
+btnPrev.addEventListener('click', () => goToStep(currentStep - 1));
+btnNext.addEventListener('click', () => {
+    if (currentStep === -1) goToStep(0);
+    else goToStep(currentStep + 1);
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER FUNCTIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function svgWrap(inner, viewBox = '0 0 900 480') {
+    return `<svg class="viz-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+}
+
+function renderForkJoin() {
+    let svg = '';
+    
+    // Master thread line
+    svg += `<line x1="450" y1="50" x2="450" y2="150" stroke="var(--accent-orange)" stroke-width="4" />`;
+    svg += `<text x="440" y="100" text-anchor="end" fill="var(--accent-orange)" font-size="12" font-family="JetBrains Mono">Master Thread</text>`;
+    
+    // Fork point
+    svg += `<circle cx="450" cy="150" r="6" fill="#fff" />`;
+    svg += `<text x="465" y="155" fill="var(--accent-blue)" font-size="11" font-family="JetBrains Mono" font-weight="bold">#pragma omp parallel</text>`;
+    
+    // Thread lines branching out
+    const threads = [-3, -1, 1, 3];
+    threads.forEach((t, i) => {
+        const xOffset = t * 60;
+        const startX = 450;
+        const endX = 450 + xOffset;
+        
+        // Forking curve
+        svg += `<path d="M ${startX} 150 C ${startX} 180, ${endX} 180, ${endX} 210" fill="none" stroke="var(--accent-blue)" stroke-width="2" stroke-dasharray="4 2" />`;
+        
+        // Parallel execution
+        svg += `<line x1="${endX}" y1="210" x2="${endX}" y2="350" stroke="var(--accent-blue)" stroke-width="3" />`;
+        
+        // Processing boxes
+        svg += `<rect x="${endX - 20}" y="240" width="40" height="80" rx="4" fill="rgba(77,166,255,0.15)" stroke="var(--accent-blue)" stroke-width="1">
+            <animate attributeName="fill-opacity" values="0.1;0.5;0.1" dur="${1.2 + i*0.2}s" repeatCount="indefinite"/>
+        </rect>`;
+        svg += `<text x="${endX}" y="285" text-anchor="middle" fill="#fff" font-size="10" font-family="JetBrains Mono">T${i}</text>`;
+        
+        // Joining curve
+        svg += `<path d="M ${endX} 350 C ${endX} 380, ${startX} 380, ${startX} 410" fill="none" stroke="var(--accent-blue)" stroke-width="2" stroke-dasharray="4 2" />`;
+    });
+    
+    // Join point
+    svg += `<circle cx="450" cy="410" r="6" fill="#fff" />`;
+    svg += `<text x="465" y="415" fill="var(--text-muted)" font-size="11" font-family="JetBrains Mono">Implicit Barrier (Join)</text>`;
+    
+    // Master thread continues
+    svg += `<line x1="450" y1="410" x2="450" y2="480" stroke="var(--accent-orange)" stroke-width="4" />`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 500');
+}
+
+function renderCovarianceLocal() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Global Vocabulary (Shared)</text>`;
+    svg += `<rect x="150" y="50" width="600" height="30" fill="rgba(255,255,255,0.05)" stroke="var(--text-muted)" stroke-width="1" />`;
+    
+    // Chunking vocab
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="${150 + i*150}" y="50" width="150" height="30" fill="rgba(77,166,255,0.1)" stroke="var(--accent-blue)" stroke-width="1" />`;
+        svg += `<text x="${225 + i*150}" y="70" text-anchor="middle" fill="var(--accent-blue)" font-size="12" font-family="JetBrains Mono">Chunk ${i}</text>`;
+        
+        // Thread assignment arrows
+        svg += `<path d="M ${225 + i*150} 80 L ${225 + i*150} 130" fill="none" stroke="var(--accent-blue)" stroke-width="1.5" marker-end="url(#arrowBlue)" stroke-dasharray="4 2">
+            <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1s" repeatCount="indefinite"/>
+        </path>`;
+        
+        // Thread local covariance matrices
+        svg += `<rect x="${185 + i*150}" y="140" width="80" height="80" rx="4" fill="rgba(255,171,64,0.1)" stroke="var(--accent-orange)" stroke-width="1.5" />`;
+        svg += `<text x="${225 + i*150}" y="165" text-anchor="middle" fill="var(--accent-orange)" font-size="10" font-family="JetBrains Mono">Thread ${i}</text>`;
+        svg += `<text x="${225 + i*150}" y="190" text-anchor="middle" fill="#fff" font-size="12" font-family="JetBrains Mono">local_cov</text>`;
+        svg += `<text x="${225 + i*150}" y="205" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">D x D</text>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-blue)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="270" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Each thread processes its assigned chunk of vocabulary and accumulates into its private 300x300 matrix.</text>`;
+    svg += `<text x="450" y="295" text-anchor="middle" fill="var(--accent-cyan)" font-size="11" font-family="JetBrains Mono">#pragma omp for nowait</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 350');
+}
+
+function renderCovarianceCritical() {
+    let svg = '';
+    
+    // Global Covariance Matrix
+    svg += `<rect x="350" y="280" width="200" height="120" rx="6" fill="rgba(180, 125, 255, 0.15)" stroke="var(--accent-purple)" stroke-width="2" />`;
+    svg += `<text x="450" y="335" text-anchor="middle" fill="#fff" font-size="14" font-family="JetBrains Mono">Global cov</text>`;
+    svg += `<text x="450" y="355" text-anchor="middle" fill="var(--text-muted)" font-size="11" font-family="JetBrains Mono">Shared (D x D)</text>`;
+    
+    // Critical section box
+    svg += `<rect x="300" y="200" width="300" height="220" rx="8" fill="none" stroke="var(--accent-pink)" stroke-width="1.5" stroke-dasharray="8 4" />`;
+    svg += `<text x="310" y="220" fill="var(--accent-pink)" font-size="12" font-family="JetBrains Mono" font-weight="bold">#pragma omp critical</text>`;
+    
+    for(let i=0; i<4; i++) {
+        // Thread local covariance matrices
+        svg += `<rect x="${185 + i*150}" y="50" width="80" height="80" rx="4" fill="rgba(255,171,64,0.1)" stroke="var(--accent-orange)" stroke-width="1" />`;
+        svg += `<text x="${225 + i*150}" y="95" text-anchor="middle" fill="var(--accent-orange)" font-size="11" font-family="JetBrains Mono">local_cov ${i}</text>`;
+        
+        // Arrows mapping down to critical section
+        // We will animate them sequentially to represent mutual exclusion
+        let delay = i * 1.5;
+        svg += `<path d="M ${225 + i*150} 130 L 450 280" fill="none" stroke="var(--accent-purple)" stroke-width="2" marker-end="url(#arrowPurple)">
+            <animate attributeName="opacity" values="0;1;1;0" dur="6s" repeatCount="indefinite" begin="${delay}s" keyTimes="0;0.1;0.4;0.5" />
+        </path>`;
+        
+        // Plus symbol
+        svg += `<circle cx="450" cy="270" r="10" fill="var(--bg-dark)" stroke="var(--accent-green)" stroke-width="1.5" opacity="0">
+            <animate attributeName="opacity" values="0;1;1;0" dur="6s" repeatCount="indefinite" begin="${delay}s" keyTimes="0;0.1;0.4;0.5" />
+        </circle>`;
+        svg += `<text x="450" y="274" text-anchor="middle" fill="var(--accent-green)" font-size="14" font-family="Inter" font-weight="bold" opacity="0">
+            +<animate attributeName="opacity" values="0;1;1;0" dur="6s" repeatCount="indefinite" begin="${delay}s" keyTimes="0;0.1;0.4;0.5" />
+        </text>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="460" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Only one thread at a time enters the critical block to add its local_cov into the global cov.</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 500');
+}
+
+function renderJacobiSerial() {
+    let svg = '';
+    
+    svg += `<text x="450" y="40" text-anchor="middle" fill="var(--accent-orange)" font-size="14" font-family="Inter" font-weight="bold">Sequential Eigendecomposition</text>`;
+    
+    svg += `<rect x="350" y="80" width="200" height="200" rx="6" fill="rgba(255,255,255,0.03)" stroke="var(--border-color)" stroke-width="1" />`;
+    
+    // Matrix cells
+    for(let r=0; r<8; r++) {
+        for(let c=0; c<8; c++) {
+            svg += `<rect x="${360 + c*22}" y="${90 + r*22}" width="20" height="20" rx="2" fill="rgba(255,255,255,0.05)" />`;
+        }
+    }
+    
+    // Simulate sweep iterations sequentially
+    svg += `<path d="M 405 125 L 493 125 L 493 213 L 405 213 Z" fill="rgba(255, 171, 64, 0.4)" stroke="var(--accent-orange)" stroke-width="1.5">
+        <animate attributeName="d" values="
+            M 383 103 L 449 103 L 449 169 L 383 169 Z;
+            M 427 125 L 515 125 L 515 213 L 427 213 Z;
+            M 361 147 L 493 147 L 493 279 L 361 279 Z;
+            M 383 103 L 449 103 L 449 169 L 383 169 Z
+        " dur="4s" repeatCount="indefinite" />
+    </path>`;
+    
+    // Single thread line
+    svg += `<line x1="200" y1="180" x2="330" y2="180" stroke="var(--accent-orange)" stroke-width="3" stroke-dasharray="4 4">
+        <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1s" repeatCount="indefinite"/>
+    </line>`;
+    svg += `<text x="265" y="170" text-anchor="middle" fill="var(--accent-orange)" font-size="11" font-family="JetBrains Mono">Master Thread Only</text>`;
+    
+    // Lock symbol or block
+    svg += `<text x="600" y="160" fill="var(--text-muted)" font-size="12" font-family="Inter">Because rotation (p,q) updates</text>`;
+    svg += `<text x="600" y="180" fill="var(--text-muted)" font-size="12" font-family="Inter">entire rows and columns p and q,</text>`;
+    svg += `<text x="600" y="200" fill="var(--accent-pink)" font-size="12" font-family="Inter" font-weight="bold">data dependencies prevent</text>`;
+    svg += `<text x="600" y="220" fill="var(--accent-pink)" font-size="12" font-family="Inter" font-weight="bold">parallelization.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 350');
+}
+
+function renderCollapse() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="14" font-family="JetBrains Mono">#pragma omp parallel for collapse(2)</text>`;
+    
+    // 2D Loop Grid
+    svg += `<text x="150" y="120" text-anchor="end" fill="var(--text-muted)" font-size="12" font-family="JetBrains Mono">for (i = 0..D)</text>`;
+    svg += `<text x="350" y="60" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="JetBrains Mono">for (j = 0..D)</text>`;
+    
+    const colors = ['var(--accent-blue)', 'var(--accent-green)', 'var(--accent-purple)', 'var(--accent-orange)'];
+    
+    svg += `<rect x="180" y="80" width="340" height="200" rx="8" fill="rgba(0,0,0,0.5)" stroke="var(--border-color)" stroke-width="1"/>`;
+    
+    // Without collapse (Mental model: threads take rows)
+    // With collapse (Mental model: threads take contiguous flattened chunks)
+    let idx = 0;
+    for(let r=0; r<8; r++) {
+        for(let c=0; c<14; c++) {
+            const threadId = Math.floor(idx / 28); // 4 threads total (28 cells each)
+            const color = colors[threadId % colors.length];
+            
+            svg += `<rect x="${190 + c*23}" y="${90 + r*23}" width="18" height="18" rx="2" fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-opacity="0.6">
+                <animate attributeName="fill-opacity" values="0.2;0.8;0.2" dur="2s" begin="${(r*14+c)*0.02}s" repeatCount="indefinite" />
+            </rect>`;
+            idx++;
+        }
+    }
+    
+    // Flattening visual
+    svg += `<path d="M 540 180 C 600 180, 600 120, 660 120" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-dasharray="4 2" marker-end="url(#arrowMuted)"/>`;
+    
+    svg += `<text x="750" y="90" text-anchor="middle" fill="var(--accent-cyan)" font-size="12" font-family="JetBrains Mono">Flattened 1D Loop</text>`;
+    
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="660" y="${110 + i*30}" width="180" height="20" fill="${colors[i]}" fill-opacity="0.2" stroke="${colors[i]}" stroke-opacity="0.6" />`;
+        svg += `<text x="750" y="${124 + i*30}" text-anchor="middle" fill="${colors[i]}" font-size="10" font-family="JetBrains Mono">Thread ${i} (D²/4 items)</text>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowMuted" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--text-muted)"/></marker>
+    </defs>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 350');
+}
+
+function renderDynamicSchedule() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="var(--accent-cyan)" font-size="14" font-family="JetBrains Mono">schedule(dynamic, 4)</text>`;
+    
+    // Task Queue (Vocabulary Tokens)
+    svg += `<text x="450" y="80" text-anchor="middle" fill="#fff" font-size="12" font-family="Inter">Task Queue (Tokens to look up)</text>`;
+    
+    // Blocks of size 4
+    for(let i=0; i<12; i++) {
+        svg += `<rect x="${90 + i*60}" y="100" width="50" height="24" rx="4" fill="rgba(255,255,255,0.05)" stroke="var(--border-color)" stroke-width="1" />`;
+        svg += `<text x="${115 + i*60}" y="116" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="JetBrains Mono">Ch ${i}</text>`;
+    }
+    
+    // Threads taking chunks
+    const tY = [200, 260, 320, 380];
+    const colors = ['var(--accent-blue)', 'var(--accent-green)', 'var(--accent-purple)', 'var(--accent-orange)'];
+    
+    for(let t=0; t<4; t++) {
+        svg += `<text x="50" y="${tY[t] + 16}" fill="${colors[t]}" font-size="12" font-family="JetBrains Mono">Thread ${t}</text>`;
+        svg += `<line x1="120" y1="${tY[t] + 12}" x2="850" y2="${tY[t] + 12}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
+        
+        // Dynamic assignment rectangles
+        // Thread 0: fast, takes 4 chunks
+        // Thread 1: slow, takes 2 chunks
+        // Thread 2: med, takes 3 chunks
+        // Thread 3: fast, takes 3 chunks
+        
+        let chunks = [];
+        if (t === 0) chunks = [{x: 120, w: 100}, {x: 280, w: 80}, {x: 420, w: 90}, {x: 650, w: 110}];
+        if (t === 1) chunks = [{x: 120, w: 250}, {x: 550, w: 200}];
+        if (t === 2) chunks = [{x: 120, w: 140}, {x: 350, w: 150}, {x: 550, w: 120}];
+        if (t === 3) chunks = [{x: 120, w: 80}, {x: 250, w: 120}, {x: 450, w: 100}];
+        
+        chunks.forEach((c) => {
+            svg += `<rect x="${c.x}" y="${tY[t]}" width="${c.w}" height="24" rx="4" fill="${colors[t]}" fill-opacity="0.3" stroke="${colors[t]}" stroke-width="1">
+                <animate attributeName="width" from="0" to="${c.w}" dur="${c.w / 50}s" fill="freeze" />
+            </rect>`;
+        });
+    }
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 450');
+}
+
+function renderStaticSchedule() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="var(--accent-green)" font-size="14" font-family="JetBrains Mono">schedule(static)</text>`;
+    
+    // Tokens array
+    svg += `<text x="450" y="80" text-anchor="middle" fill="#fff" font-size="12" font-family="Inter">Tokens Array (Positional Encoding)</text>`;
+    
+    const tY = [200, 260, 320, 380];
+    const colors = ['var(--accent-blue)', 'var(--accent-green)', 'var(--accent-purple)', 'var(--accent-orange)'];
+    
+    // Static pre-allocation
+    for(let t=0; t<4; t++) {
+        // Show chunk in array
+        svg += `<rect x="${100 + t*175}" y="100" width="170" height="24" rx="4" fill="${colors[t]}" fill-opacity="0.2" stroke="${colors[t]}" stroke-width="1" />`;
+        svg += `<text x="${185 + t*175}" y="116" text-anchor="middle" fill="${colors[t]}" font-size="10" font-family="JetBrains Mono">Chunk ${t}</text>`;
+        
+        // Connecting line mapping chunk to thread
+        svg += `<path d="M ${185 + t*175} 124 L 100 ${tY[t] + 12}" fill="none" stroke="${colors[t]}" stroke-width="1" stroke-dasharray="2 2" opacity="0.5"/>`;
+        
+        // Thread execution timeline
+        svg += `<text x="15" y="${tY[t] + 16}" fill="${colors[t]}" font-size="12" font-family="JetBrains Mono">Thread ${t}</text>`;
+        svg += `<line x1="100" y1="${tY[t] + 12}" x2="800" y2="${tY[t] + 12}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
+        
+        // All threads take exactly the same time because math is uniform
+        svg += `<rect x="100" y="${tY[t]}" width="500" height="24" rx="4" fill="${colors[t]}" fill-opacity="0.3" stroke="${colors[t]}" stroke-width="1">
+            <animate attributeName="width" from="0" to="500" dur="2s" fill="freeze" />
+        </rect>`;
+    }
+    
+    svg += `<line x1="600" y1="180" x2="600" y2="420" stroke="var(--accent-pink)" stroke-width="2" stroke-dasharray="6 4" />`;
+    svg += `<text x="610" y="300" fill="var(--accent-pink)" font-size="11" font-family="JetBrains Mono">Implicit Sync Barrier</text>`;
+    svg += `<text x="610" y="320" fill="var(--text-muted)" font-size="10" font-family="Inter">All finish at same time</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 450');
+}
+
+function renderAttentionOMP() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Self-Attention Scoring (QK^T)</text>`;
+    svg += `<text x="450" y="50" text-anchor="middle" fill="var(--accent-cyan)" font-size="12" font-family="JetBrains Mono">#pragma omp parallel for collapse(2) reduction(+:qk_ops)</text>`;
+    
+    // Matrix Q and K
+    svg += `<rect x="150" y="100" width="80" height="200" rx="4" fill="rgba(77,166,255,0.1)" stroke="var(--accent-blue)" stroke-width="1.5"/>`;
+    svg += `<text x="190" y="90" text-anchor="middle" fill="var(--accent-blue)" font-size="14" font-family="JetBrains Mono">Q</text>`;
+    svg += `<text x="190" y="200" text-anchor="middle" fill="var(--accent-blue)" font-size="10" font-family="JetBrains Mono">T x d</text>`;
+    
+    svg += `<text x="260" y="200" text-anchor="middle" fill="#fff" font-size="20">×</text>`;
+    
+    svg += `<rect x="290" y="150" width="200" height="80" rx="4" fill="rgba(118,228,170,0.1)" stroke="var(--accent-green)" stroke-width="1.5"/>`;
+    svg += `<text x="390" y="140" text-anchor="middle" fill="var(--accent-green)" font-size="14" font-family="JetBrains Mono">K^T</text>`;
+    svg += `<text x="390" y="195" text-anchor="middle" fill="var(--accent-green)" font-size="10" font-family="JetBrains Mono">d x T</text>`;
+    
+    svg += `<text x="520" y="200" text-anchor="middle" fill="#fff" font-size="20">=</text>`;
+    
+    // Scores matrix (T x T)
+    svg += `<rect x="550" y="100" width="200" height="200" rx="6" fill="rgba(180,125,255,0.1)" stroke="var(--accent-purple)" stroke-width="1.5"/>`;
+    svg += `<text x="650" y="90" text-anchor="middle" fill="var(--accent-purple)" font-size="14" font-family="JetBrains Mono">Scores</text>`;
+    
+    // Threads mapping to rows of Scores
+    const colors = ['var(--accent-blue)', 'var(--accent-green)', 'var(--accent-orange)', 'var(--accent-pink)'];
+    for(let t=0; t<4; t++) {
+        svg += `<rect x="550" y="${100 + t*50}" width="200" height="50" fill="${colors[t]}" fill-opacity="0.2" stroke="${colors[t]}" stroke-width="1">
+             <animate attributeName="fill-opacity" values="0.1;0.4;0.1" dur="1.5s" begin="${t*0.2}s" repeatCount="indefinite" />
+        </rect>`;
+        svg += `<text x="650" y="${130 + t*50}" text-anchor="middle" fill="${colors[t]}" font-size="11" font-family="JetBrains Mono">Thread ${t} computes chunk</text>`;
+    }
+    
+    svg += `<text x="450" y="350" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Loops over queries (i) and keys (j) are collapsed. Threads compute independent blocks of the output matrix in parallel.</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+</script>
+</body>
+</html>

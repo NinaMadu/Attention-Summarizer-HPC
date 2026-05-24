@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MPI Parallelization Visualization — Attention Summarizer</title>
+    <meta name="description" content="Interactive visualization of MPI Distributed-Memory parallelization strategies used in the Attention Summarizer HPC project.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0c14;
+            --bg-panel: rgba(18, 22, 36, 0.85);
+            --accent-green: #76e4aa;
+            --accent-cyan: #00e5ff;
+            --accent-purple: #b47dff;
+            --accent-orange: #ffab40;
+            --accent-pink: #ff4d8d;
+            --accent-red: #ff5e5e;
+            --accent-yellow: #ffe066;
+            --accent-blue: #4da6ff;
+            --text-main: #e2e8f0;
+            --text-muted: #7e8aa0;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --glass: rgba(255,255,255,0.03);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            background-image:
+                radial-gradient(ellipse at 10% 80%, rgba(255, 94, 94, 0.06), transparent 40%),
+                radial-gradient(ellipse at 90% 20%, rgba(180, 125, 255, 0.06), transparent 40%),
+                radial-gradient(ellipse at 50% 50%, rgba(0, 229, 255, 0.04), transparent 50%);
+        }
+
+        /* ─── Sidebar ─── */
+        #sidebar {
+            width: 340px;
+            min-width: 340px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            z-index: 10;
+        }
+
+        #sidebar-header {
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 1rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        #sidebar-subtitle {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #steps-list {
+            list-style: none;
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+            margin-top: 16px;
+        }
+        #steps-list::-webkit-scrollbar { width: 4px; }
+        #steps-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+        .step-item {
+            padding: 10px 14px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-item:hover { background: rgba(255,255,255,0.04); }
+        .step-item.active {
+            background: rgba(255, 94, 94, 0.08);
+            border-color: rgba(255, 94, 94, 0.25);
+            color: var(--accent-red);
+            box-shadow: 0 0 20px rgba(255, 94, 94, 0.08);
+        }
+        .step-item.completed { color: var(--text-main); }
+        .step-item .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+            box-shadow: 0 0 6px currentColor;
+        }
+        .step-item .badge {
+            margin-left: auto;
+            font-size: 0.6rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-mpi { background: rgba(255, 94, 94, 0.15); color: var(--accent-red); }
+        .badge-comm { background: rgba(180, 125, 255, 0.15); color: var(--accent-purple); }
+        .badge-root { background: rgba(0, 229, 255, 0.15); color: var(--accent-cyan); }
+
+        /* Controls */
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+        }
+        button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+        button:hover:not(:disabled) {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btn-next {
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-purple));
+            color: #0a0c14;
+            border: none;
+            font-weight: 800;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 20px rgba(255, 94, 94, 0.3);
+            filter: brightness(1.1);
+        }
+
+        /* ─── Main Stage ─── */
+        #main-stage {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 32px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #stage-header {
+            margin-bottom: 24px;
+            transition: opacity 0.3s;
+        }
+        #stage-title {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        #stage-desc {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            max-width: 900px;
+            line-height: 1.65;
+        }
+
+        #visualization-area {
+            flex-grow: 1;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.4);
+            transition: opacity 0.3s;
+        }
+
+        /* ─── Reusable Components ─── */
+        .flex-center { display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%; height: 100%; }
+
+        /* SVG Canvas */
+        .viz-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.92); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes commFlow {
+            0% { stroke-dashoffset: 12; }
+            100% { stroke-dashoffset: 0; }
+        }
+        @keyframes nodeWork {
+            0% { border-color: rgba(255, 94, 94, 0.2); box-shadow: 0 0 0 rgba(255, 94, 94, 0); }
+            50% { border-color: rgba(255, 94, 94, 0.8); box-shadow: 0 0 20px rgba(255, 94, 94, 0.2); }
+            100% { border-color: rgba(255, 94, 94, 0.2); box-shadow: 0 0 0 rgba(255, 94, 94, 0); }
+        }
+
+        /* Welcome Hero */
+        .hero-cluster {
+            display: flex;
+            gap: 20px;
+            animation: fadeInScale 1s ease;
+        }
+        .node {
+            width: 80px; height: 100px;
+            background: linear-gradient(180deg, rgba(255,94,94,0.1), rgba(180,125,255,0.1));
+            border: 2px solid rgba(255,94,94,0.3);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            animation: nodeWork 2s infinite ease-in-out;
+        }
+        .node-network {
+            width: 100%; height: 4px;
+            background: var(--accent-purple);
+            box-shadow: 0 0 10px var(--accent-purple);
+            border-radius: 2px;
+            margin-top: 10px;
+        }
+        .network-link {
+            width: 2px; height: 20px;
+            background: var(--accent-purple);
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>MPI Parallelization</h1>
+            <div id="sidebar-subtitle">Distributed-Memory Pipeline</div>
+        </div>
+        <ul id="steps-list"></ul>
+        <div id="controls">
+            <button id="btn-prev" disabled>◂ Prev</button>
+            <button id="btn-next">Next ▸</button>
+        </div>
+    </div>
+
+    <div id="main-stage">
+        <div id="stage-header">
+            <h2 id="stage-title">MPI Cluster Distribution</h2>
+            <p id="stage-desc">Explore how the Attention Summarizer scales across multiple independent nodes using the Message Passing Interface (MPI). Click <strong>Next</strong> to walk through each communication stage.</p>
+        </div>
+        <div id="visualization-area">
+            <div class="flex-center">
+                <div class="hero-cluster" id="hero-cluster">
+                    <!-- Nodes added by JS -->
+                </div>
+                <div class="network-link"></div>
+                <div class="node-network" style="width: 380px;"></div>
+                <h3 style="margin-top:24px; font-weight:300; letter-spacing:3px; text-transform:uppercase; font-size:0.9rem; color:var(--text-muted);">
+                    SPMD Execution Model
+                </h3>
+                <div style="margin-top:8px; font-size:0.8rem; color:var(--text-muted);">
+                    Isolated Address Spaces · Explicit Communication · Network Overheads
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// Initialize hero cluster
+(() => {
+    const cluster = document.getElementById('hero-cluster');
+    for (let i = 0; i < 4; i++) {
+        const node = document.createElement('div');
+        node.className = 'node';
+        node.style.animationDelay = `${i * 0.4}s`;
+        node.innerHTML = `<span style="font-family:'JetBrains Mono'; font-size:0.75rem; color:var(--accent-red); font-weight:bold;">Rank ${i}</span><span style="font-size:0.65rem; color:var(--text-muted); margin-top:4px;">RAM</span>`;
+        cluster.appendChild(node);
+    }
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   STEP DEFINITIONS
+   ═══════════════════════════════════════════════════════════════════ */
+const steps = [
+    {
+        title: 'SPMD & Data Splitting',
+        badge: 'mpi',
+        desc: 'MPI uses the Single Program, Multiple Data (SPMD) paradigm. Every rank runs the exact same code but operates on its own private memory. The `mpi_range` function divides loop iterations evenly among ranks so each node computes a disjoint chunk of the workload.',
+        render: renderDataSplit
+    },
+    {
+        title: 'Covariance: MPI_Reduce',
+        badge: 'comm',
+        desc: 'Instead of shared memory atomics, each MPI rank computes a complete but partial `local_cov` matrix from its chunk of the vocabulary. `MPI_Reduce(..., MPI_SUM, 0)` is then used to aggregate all these local matrices across the network into the final `cov` matrix on Rank 0.',
+        render: renderReduce
+    },
+    {
+        title: 'Jacobi: Serial on Root',
+        badge: 'root',
+        desc: 'Due to loop dependencies in the Jacobi sweeps, parallelization is ineffective. Therefore, Rank 0 (the root) computes the eigendecomposition entirely on its own while other ranks simply bypass this step. Rank 0 produces the W_Q and W_K matrices.',
+        render: renderRootCompute
+    },
+    {
+        title: 'Whitening: MPI_Bcast',
+        badge: 'comm',
+        desc: 'After Rank 0 calculates the whitening projection matrices (W_Q and W_K), the other ranks need them for the attention stage. `MPI_Bcast` broadcasts these matrices over the network from Rank 0 to all other ranks so everyone has the exact same weights.',
+        render: renderBroadcast
+    },
+    {
+        title: 'Attention: MPI_Allreduce',
+        badge: 'comm',
+        desc: 'During Attention, each rank calculates partial Q and K projection sums for its assigned tokens. `MPI_Allreduce(..., MPI_SUM)` is used so that every rank receives the globally summed Q and K matrices, allowing them all to independently compute the QK^T dot products.',
+        render: renderAllReduce
+    }
+];
+
+let currentStep = -1;
+const listEl = document.getElementById('steps-list');
+const titleEl = document.getElementById('stage-title');
+const descEl = document.getElementById('stage-desc');
+const visEl = document.getElementById('visualization-area');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+
+steps.forEach((step, idx) => {
+    const li = document.createElement('li');
+    li.className = 'step-item';
+    li.innerHTML = `<span class="dot"></span><span>${step.title}</span><span class="badge badge-${step.badge}">${step.badge}</span>`;
+    li.onclick = () => goToStep(idx);
+    listEl.appendChild(li);
+});
+
+function goToStep(idx) {
+    if (idx < 0 || idx >= steps.length) return;
+    currentStep = idx;
+    visEl.style.opacity = '0';
+    document.getElementById('stage-header').style.opacity = '0';
+    setTimeout(() => {
+        const step = steps[idx];
+        titleEl.innerText = step.title;
+        descEl.innerHTML = step.desc;
+        visEl.innerHTML = '';
+        step.render();
+        visEl.style.opacity = '1';
+        const header = document.getElementById('stage-header');
+        header.style.opacity = '1';
+        header.style.animation = 'none';
+        void header.offsetWidth;
+        header.style.animation = 'fadeInUp 0.5s ease';
+        updateSidebar();
+        updateControls();
+    }, 300);
+}
+
+function updateSidebar() {
+    listEl.querySelectorAll('li').forEach((li, idx) => {
+        li.classList.remove('active', 'completed');
+        if (idx === currentStep) li.classList.add('active');
+        else if (idx < currentStep) li.classList.add('completed');
+    });
+}
+
+function updateControls() {
+    btnPrev.disabled = currentStep < 0;
+    btnNext.disabled = currentStep === steps.length - 1;
+    btnNext.innerText = currentStep === steps.length - 1 ? 'Done' : 'Next ▸';
+}
+
+btnPrev.addEventListener('click', () => goToStep(currentStep - 1));
+btnNext.addEventListener('click', () => {
+    if (currentStep === -1) goToStep(0);
+    else goToStep(currentStep + 1);
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER FUNCTIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function svgWrap(inner, viewBox = '0 0 900 480') {
+    return `<svg class="viz-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+}
+
+function renderDataSplit() {
+    let svg = '';
+    
+    // Global Loop Space
+    svg += `<text x="450" y="30" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Global Workload (e.g. Vocabulary V)</text>`;
+    svg += `<rect x="150" y="50" width="600" height="30" fill="rgba(255,255,255,0.05)" stroke="var(--text-muted)" stroke-width="1" />`;
+    
+    // Split into chunks via mpi_range
+    const colors = ['var(--accent-red)', 'var(--accent-cyan)', 'var(--accent-purple)', 'var(--accent-orange)'];
+    
+    for(let i=0; i<4; i++) {
+        // Chunk highlighted
+        svg += `<rect x="${150 + i*150}" y="50" width="150" height="30" fill="${colors[i]}" fill-opacity="0.1" stroke="${colors[i]}" stroke-width="1" />`;
+        
+        // Target Node
+        svg += `<rect x="${175 + i*150}" y="180" width="100" height="120" rx="8" fill="rgba(255,255,255,0.03)" stroke="${colors[i]}" stroke-width="2" />`;
+        svg += `<text x="${225 + i*150}" y="205" text-anchor="middle" fill="${colors[i]}" font-size="14" font-family="JetBrains Mono" font-weight="bold">Rank ${i}</text>`;
+        
+        // Memory boundary (SPMD)
+        svg += `<rect x="${185 + i*150}" y="220" width="80" height="60" rx="4" fill="${colors[i]}" fill-opacity="0.05" stroke="${colors[i]}" stroke-dasharray="2 2" stroke-width="1" />`;
+        svg += `<text x="${225 + i*150}" y="240" text-anchor="middle" fill="var(--text-muted)" font-size="10" font-family="Inter">Private RAM</text>`;
+        svg += `<text x="${225 + i*150}" y="260" text-anchor="middle" fill="${colors[i]}" font-size="10" font-family="JetBrains Mono">start..end</text>`;
+        
+        // Flow arrows
+        svg += `<path d="M ${225 + i*150} 80 C ${225 + i*150} 130, ${225 + i*150} 130, ${225 + i*150} 170" fill="none" stroke="${colors[i]}" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow${i})">
+            <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1s" repeatCount="indefinite"/>
+        </path>`;
+        
+        svg += `<defs>
+            <marker id="arrow${i}" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="${colors[i]}"/></marker>
+        </defs>`;
+    }
+    
+    svg += `<text x="450" y="350" text-anchor="middle" fill="var(--text-muted)" font-size="13" font-family="JetBrains Mono">mpi_range(N, &start, &end)</text>`;
+    svg += `<text x="450" y="375" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Calculates strict boundaries for each rank based on N/mpi_size without requiring communication.</text>`;
+    
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderReduce() {
+    let svg = '';
+    
+    const colors = ['var(--accent-red)', 'var(--text-muted)', 'var(--text-muted)', 'var(--text-muted)'];
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="var(--accent-purple)" font-size="16" font-family="JetBrains Mono" font-weight="bold">MPI_Reduce(local_cov, cov, D*D, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD)</text>`;
+    
+    // Nodes holding local data
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="${100 + i*200}" y="80" width="100" height="80" rx="6" fill="rgba(255,255,255,0.02)" stroke="${colors[i]}" stroke-width="${i===0 ? 2 : 1}" />`;
+        svg += `<text x="${150 + i*200}" y="100" text-anchor="middle" fill="${colors[i]}" font-size="12" font-family="JetBrains Mono" font-weight="bold">Rank ${i}</text>`;
+        svg += `<rect x="${120 + i*200}" y="115" width="60" height="30" fill="rgba(180,125,255,0.15)" stroke="var(--accent-purple)" stroke-width="1" />`;
+        svg += `<text x="${150 + i*200}" y="135" text-anchor="middle" fill="var(--accent-purple)" font-size="10" font-family="JetBrains Mono">local_cov</text>`;
+    }
+    
+    // Reduction Network
+    svg += `<line x1="150" y1="220" x2="750" y2="220" stroke="var(--border-color)" stroke-width="4" stroke-linecap="round"/>`;
+    
+    // Data flowing to network
+    for(let i=0; i<4; i++) {
+        svg += `<path d="M ${150 + i*200} 160 L ${150 + i*200} 220" fill="none" stroke="var(--accent-purple)" stroke-width="2" stroke-dasharray="4 2">
+            <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.8s" repeatCount="indefinite" />
+        </path>`;
+        svg += `<circle cx="${150 + i*200}" cy="220" r="4" fill="var(--accent-purple)" />`;
+    }
+    
+    // Network flowing to Rank 0
+    svg += `<path d="M 250 220 L 150 220" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="6 3">
+        <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    svg += `<path d="M 450 220 L 150 220" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="6 3">
+        <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    svg += `<path d="M 650 220 L 150 220" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="6 3">
+        <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    
+    // Target buffer on Rank 0
+    svg += `<path d="M 150 220 L 150 280" fill="none" stroke="var(--accent-purple)" stroke-width="3" marker-end="url(#arrowPurple)">
+        <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    
+    svg += `<rect x="90" y="290" width="120" height="60" rx="4" fill="rgba(255,94,94,0.1)" stroke="var(--accent-red)" stroke-width="2" />`;
+    svg += `<text x="150" y="315" text-anchor="middle" fill="#fff" font-size="12" font-family="JetBrains Mono">Global cov</text>`;
+    svg += `<text x="150" y="335" text-anchor="middle" fill="var(--accent-green)" font-size="12" font-family="JetBrains Mono">Σ (local_cov)</text>`;
+    
+    svg += `<defs>
+        <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="320" fill="var(--text-muted)" font-size="12" font-family="Inter">The MPI backend securely gathers matrices over the</text>`;
+    svg += `<text x="450" y="340" fill="var(--text-muted)" font-size="12" font-family="Inter">network and applies a summation reduction tree, placing</text>`;
+    svg += `<text x="450" y="360" fill="var(--text-muted)" font-size="12" font-family="Inter">the final matrix strictly into Rank 0's memory.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderRootCompute() {
+    let svg = '';
+    
+    svg += `<text x="450" y="40" text-anchor="middle" fill="#fff" font-size="16" font-family="Inter" font-weight="bold">Jacobi Eigen on Root</text>`;
+    svg += `<text x="450" y="65" text-anchor="middle" fill="var(--accent-cyan)" font-size="12" font-family="JetBrains Mono">if (mpi_rank == 0) { ... }</text>`;
+    
+    // Rank 0 (Active)
+    svg += `<rect x="250" y="120" width="160" height="200" rx="8" fill="rgba(0,229,255,0.05)" stroke="var(--accent-cyan)" stroke-width="2" />`;
+    svg += `<text x="330" y="150" text-anchor="middle" fill="var(--accent-cyan)" font-size="14" font-family="JetBrains Mono" font-weight="bold">Rank 0</text>`;
+    
+    svg += `<rect x="290" y="170" width="80" height="60" rx="4" fill="rgba(255,171,64,0.15)" stroke="var(--accent-orange)" stroke-width="1.5" />`;
+    svg += `<text x="330" y="205" text-anchor="middle" fill="var(--accent-orange)" font-size="12" font-family="Inter" font-weight="bold">Jacobi Math</text>`;
+    
+    // CPU gear icon rotation
+    svg += `<g style="transform-origin: 330px 250px; animation: spin 4s linear infinite;">
+        <circle cx="330" cy="250" r="15" fill="none" stroke="var(--accent-cyan)" stroke-width="3" stroke-dasharray="6 4" />
+        <circle cx="330" cy="250" r="8" fill="var(--accent-cyan)" />
+    </g>`;
+    
+    // Other ranks (Idle)
+    svg += `<rect x="550" y="120" width="160" height="200" rx="8" fill="rgba(255,255,255,0.02)" stroke="var(--text-muted)" stroke-width="1" />`;
+    svg += `<text x="630" y="150" text-anchor="middle" fill="var(--text-muted)" font-size="14" font-family="JetBrains Mono" font-weight="bold">Ranks 1..N</text>`;
+    svg += `<text x="630" y="210" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Idle</text>`;
+    svg += `<text x="630" y="235" text-anchor="middle" fill="var(--accent-purple)" font-size="11" font-family="JetBrains Mono">MPI_Barrier()</text>`;
+    
+    svg += `<style>
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>`;
+    
+    svg += `<text x="450" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Because Jacobi rotations have sequential dependencies, Rank 0 performs the calculation entirely by itself.</text>`;
+    svg += `<text x="450" y="380" text-anchor="middle" fill="var(--text-muted)" font-size="12" font-family="Inter">Other nodes simply wait at an MPI barrier.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 420');
+}
+
+function renderBroadcast() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="var(--accent-purple)" font-size="16" font-family="JetBrains Mono" font-weight="bold">MPI_Bcast(W_Q, D*D, MPI_FLOAT, 0, MPI_COMM_WORLD)</text>`;
+    
+    // Nodes
+    const colors = ['var(--accent-cyan)', 'var(--text-muted)', 'var(--text-muted)', 'var(--text-muted)'];
+    
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="${100 + i*200}" y="80" width="100" height="80" rx="6" fill="rgba(255,255,255,0.02)" stroke="${colors[i]}" stroke-width="${i===0 ? 2 : 1}" />`;
+        svg += `<text x="${150 + i*200}" y="100" text-anchor="middle" fill="${colors[i]}" font-size="12" font-family="JetBrains Mono" font-weight="bold">Rank ${i}</text>`;
+        
+        // Matrix container
+        svg += `<rect x="${120 + i*200}" y="115" width="60" height="30" fill="${i===0 ? 'rgba(0,229,255,0.15)' : 'rgba(180,125,255,0.05)'}" stroke="${i===0 ? 'var(--accent-cyan)' : 'var(--accent-purple)'}" stroke-width="1" />`;
+        svg += `<text x="${150 + i*200}" y="135" text-anchor="middle" fill="${i===0 ? 'var(--accent-cyan)' : 'var(--text-muted)'}" font-size="10" font-family="JetBrains Mono">W_Q & W_K</text>`;
+    }
+    
+    // Network bus
+    svg += `<line x1="150" y1="220" x2="750" y2="220" stroke="var(--accent-purple)" stroke-width="4" stroke-linecap="round"/>`;
+    
+    // Broadcast from Rank 0
+    svg += `<path d="M 150 160 L 150 220" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="6 3">
+        <animate attributeName="stroke-dashoffset" from="0" to="-18" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    
+    // Flow across bus
+    svg += `<path d="M 150 220 L 750 220" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="6 3">
+        <animate attributeName="stroke-dashoffset" from="0" to="-18" dur="0.8s" repeatCount="indefinite" />
+    </path>`;
+    
+    // Receiving to Ranks 1-3
+    for(let i=1; i<4; i++) {
+        svg += `<path d="M ${150 + i*200} 220 L ${150 + i*200} 160" fill="none" stroke="var(--accent-purple)" stroke-width="2" stroke-dasharray="4 2" marker-end="url(#arrowBcast)">
+            <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.8s" repeatCount="indefinite" />
+        </path>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowBcast" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-purple)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="320" fill="var(--text-muted)" font-size="12" font-family="Inter" text-anchor="middle">Rank 0 acts as the source root. It copies its newly calculated projection matrices</text>`;
+    svg += `<text x="450" y="340" fill="var(--text-muted)" font-size="12" font-family="Inter" text-anchor="middle">over the network to identically overwrite the uninitialized memory on all other ranks.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 400');
+}
+
+function renderAllReduce() {
+    let svg = '';
+    
+    svg += `<text x="450" y="30" text-anchor="middle" fill="var(--accent-purple)" font-size="14" font-family="JetBrains Mono" font-weight="bold">MPI_Allreduce(MPI_IN_PLACE, Q, T*D, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD)</text>`;
+    
+    const colors = ['var(--accent-red)', 'var(--accent-cyan)', 'var(--accent-green)', 'var(--accent-orange)'];
+    
+    // Compute phase (Pre-AllReduce)
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="${100 + i*200}" y="80" width="100" height="90" rx="6" fill="rgba(255,255,255,0.02)" stroke="${colors[i]}" stroke-width="1" />`;
+        svg += `<text x="${150 + i*200}" y="100" text-anchor="middle" fill="${colors[i]}" font-size="12" font-family="JetBrains Mono" font-weight="bold">Rank ${i}</text>`;
+        
+        svg += `<rect x="${120 + i*200}" y="115" width="60" height="40" fill="${colors[i]}" fill-opacity="0.1" stroke="${colors[i]}" stroke-width="1" />`;
+        
+        // Indicate partial Q calculation (stripes)
+        const stripeY = 115 + (i * 10);
+        svg += `<rect x="${120 + i*200}" y="${stripeY}" width="60" height="10" fill="${colors[i]}" fill-opacity="0.6" />`;
+        
+        svg += `<text x="${150 + i*200}" y="170" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-family="JetBrains Mono">Partial Q</text>`;
+    }
+    
+    // Communication Ring / Tree abstraction
+    svg += `<ellipse cx="450" cy="240" rx="300" ry="30" fill="none" stroke="var(--accent-purple)" stroke-width="3" stroke-dasharray="8 4" opacity="0.6">
+        <animate attributeName="stroke-dashoffset" from="24" to="0" dur="1s" repeatCount="indefinite" />
+    </ellipse>`;
+    
+    // Downwards connections
+    for(let i=0; i<4; i++) {
+        svg += `<line x1="${150 + i*200}" y1="170" x2="${150 + i*200}" y2="240" stroke="var(--accent-purple)" stroke-width="2" opacity="0.6" />`;
+        svg += `<circle cx="${150 + i*200}" cy="240" r="5" fill="var(--accent-purple)" />`;
+    }
+    
+    // Result phase (Post-AllReduce)
+    for(let i=0; i<4; i++) {
+        svg += `<rect x="${100 + i*200}" y="290" width="100" height="80" rx="6" fill="rgba(255,255,255,0.02)" stroke="var(--accent-green)" stroke-width="2" />`;
+        svg += `<text x="${150 + i*200}" y="310" text-anchor="middle" fill="var(--accent-green)" font-size="12" font-family="JetBrains Mono" font-weight="bold">Rank ${i}</text>`;
+        
+        svg += `<rect x="${120 + i*200}" y="325" width="60" height="30" fill="rgba(118,228,170,0.2)" stroke="var(--accent-green)" stroke-width="1" />`;
+        svg += `<text x="${150 + i*200}" y="345" text-anchor="middle" fill="#fff" font-size="11" font-family="JetBrains Mono">Global Q</text>`;
+        
+        svg += `<path d="M ${150 + i*200} 240 L ${150 + i*200} 280" fill="none" stroke="var(--accent-green)" stroke-width="2" marker-end="url(#arrowGreen)">
+            <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite" />
+        </path>`;
+    }
+    
+    svg += `<defs>
+        <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent-green)"/></marker>
+    </defs>`;
+    
+    svg += `<text x="450" y="400" fill="var(--text-muted)" font-size="12" font-family="Inter" text-anchor="middle">Equivalent to a Reduce followed by a Broadcast. Every rank submits its partially filled matrix,</text>`;
+    svg += `<text x="450" y="420" fill="var(--text-muted)" font-size="12" font-family="Inter" text-anchor="middle">and the MPI backend combines them and returns the complete, summed matrix to all ranks simultaneously.</text>`;
+
+    visEl.innerHTML = svgWrap(svg, '0 0 900 450');
+}
+
+</script>
+</body>
+</html>
