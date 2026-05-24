@@ -1623,7 +1623,7 @@ int main() {
     double total_start = now_sec();
 
     /* ---- Stage: load GloVe embeddings ---- */
-    if (!load_glove("glove.6B.300d.txt")) return 1;
+    if (!load_glove("glove.6B.200d.txt")) return 1;
 
     /* ---- Stage: PCA whitening via GPU covariance + CPU Jacobi ---- */
     compute_pca_projections_cuda(total_start);
